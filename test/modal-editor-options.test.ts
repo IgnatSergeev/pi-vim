@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { ModalEditor } from "../index.js";
+import { readPiVimInsertEnterBehaviour } from "../settings.js";
 import { stubKeybindings, stubTheme, stubTui } from "./harness.js";
 
 type ModalEditorOptions = ConstructorParameters<typeof ModalEditor>[3];
 
 const ESC = "\x1b";
+const ENTER = "\r";
 
 function createEditor(opts?: ModalEditorOptions): {
   editor: ModalEditor;
@@ -30,6 +32,70 @@ function seed(editor: ModalEditor, text: string): void {
   editor.handleInput(ESC);
   editor.handleInput("0");
 }
+
+describe("new behavior settings readers", () => {
+  it("reads the label, enter, paste, and highlight settings", () => {
+    const global = {
+      piVim: {
+        insertEnterBehaviour: "newline",
+      },
+    };
+    assert.equal(readPiVimInsertEnterBehaviour(global, {}), "newline");
+  });
+
+  it("ignores unknown values", () => {
+    assert.equal(
+      readPiVimInsertEnterBehaviour(
+        { piVim: { insertEnterBehaviour: "maybe" } },
+        {},
+      ),
+      undefined,
+    );
+  });
+});
+
+describe("enter in insert mode", () => {
+  it("submits by default", () => {
+    const { editor, submits } = createEditor();
+    for (const char of "hi") editor.handleInput(char);
+    editor.handleInput(ENTER);
+    assert.deepEqual(submits, ["hi"]);
+  });
+
+  it("opens a new line when insertEnterBehaviour is newline", () => {
+    const { editor, submits } = createEditor({
+      insertEnterBehaviour: "newline",
+    });
+    for (const char of "hi") editor.handleInput(char);
+    editor.handleInput(ENTER);
+    editor.handleInput("there");
+    assert.deepEqual(submits, []);
+    assert.equal(editor.getText(), "hi\nthere");
+  });
+
+  it("still submits from normal mode", () => {
+    const { editor, submits } = createEditor({
+      insertEnterBehaviour: "newline",
+    });
+    seed(editor, "hi");
+    editor.handleInput(ENTER);
+    assert.deepEqual(submits, ["hi"]);
+  });
+
+  it("keeps the newline in a dot-repeatable insert run", () => {
+    const { editor, submits } = createEditor({
+      insertEnterBehaviour: "newline",
+    });
+    seed(editor, "ab");
+    editor.handleInput("A");
+    editor.handleInput("!");
+    editor.handleInput(ENTER);
+    editor.handleInput(ESC);
+    editor.handleInput(".");
+    assert.deepEqual(submits, []);
+    assert.equal(editor.getText(), "ab!\n!\n");
+  });
+});
 
 describe("put over a visual selection", () => {
   const seedVisual = (text: string, register: string, keys: string[]) => {

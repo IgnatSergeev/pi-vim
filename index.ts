@@ -64,7 +64,9 @@ import {
 } from "./motions.js";
 import {
   DEFAULT_EX_COMMAND_SETTINGS,
+  DEFAULT_INSERT_ENTER_BEHAVIOUR,
   type ExCommandSettings,
+  type InsertEnterBehaviour,
   readPiVimSettings,
   resolveExCommandSettings,
   resolveSurfaceSyncMaps,
@@ -261,6 +263,7 @@ type ModalEditorOptions = {
   // Reverse-video transform applied to the label. When the label defers to the
   // host color it is wrapped with this so it keeps its block styling.
   labelTransform?: ((s: string) => string) | null;
+  insertEnterBehaviour?: InsertEnterBehaviour;
 };
 
 export class ModalEditor extends CustomEditor {
@@ -316,6 +319,7 @@ export class ModalEditor extends CustomEditor {
   private readonly cursorShapeRuntime: CursorShapeRuntime | null;
   private lastCursorShapeSequence: CursorShapeSequence | null = null;
   private lastLineCache = { l: "", w: 0, label: "", result: "" };
+  private readonly insertEnterBehaviour: InsertEnterBehaviour;
 
   private unnamedRegister: string = "";
   private preferRegisterForPut = false;
@@ -362,6 +366,8 @@ export class ModalEditor extends CustomEditor {
     this.borderSync = opts?.borderSync ?? null;
     this.labelSync = opts?.labelSync ?? null;
     this.labelTransform = opts?.labelTransform ?? null;
+    this.insertEnterBehaviour =
+      opts?.insertEnterBehaviour ?? DEFAULT_INSERT_ENTER_BEHAVIOUR;
     this.installModeBorderColorizer();
     this.installVisualHighlight();
   }
@@ -752,8 +758,13 @@ export class ModalEditor extends CustomEditor {
   private shouldCancelInsertRepeatInput(key: string): boolean {
     // A submit must cancel the recording, not be captured into it. A bare `\r`
     // check missed the Kitty CSI-u Enter (`\x1b[13u`), letting it be recorded
-    // and then re-submitted on replay.
-    if (this.isSubmitEnterInput(key)) return true;
+    // and then re-submitted on replay. When Enter only opens a line it edits
+    // the buffer like any other key, so it stays in the recording.
+    if (this.isSubmitEnterInput(key)) {
+      return (
+        this.insertEnterBehaviour !== "newline" || this.isShowingAutocomplete()
+      );
+    }
     return key === "\t" && this.isShowingAutocomplete();
   }
 
@@ -1350,6 +1361,14 @@ export class ModalEditor extends CustomEditor {
       }
 
       if ("insert" === this.mode) {
+        if (
+          this.insertEnterBehaviour === "newline" &&
+          this.isSubmitEnterInput(data) &&
+          !this.isShowingAutocomplete()
+        ) {
+          super.handleInput(NEWLINE);
+          return;
+        }
         if (matchesKey(data, Key.shiftAlt("a")) || data === "\x1bA") {
           super.handleInput(CTRL_E);
           return;
@@ -4361,6 +4380,7 @@ export default function (pi: ExtensionAPI) {
         labelSync,
         offBorderColor,
         labelTransform: reverseVideo,
+        insertEnterBehaviour: piVimSettings.insertEnterBehaviour,
       });
       editor.setClipboardMirrorPolicy(clipboardMirrorPolicy.policy);
       editor.setQuitFn(() => ctx.shutdown());

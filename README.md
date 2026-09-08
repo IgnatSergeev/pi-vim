@@ -351,7 +351,7 @@ Visual-mode edits are deliberately **not** dot-repeatable: running one clears th
 
 ## settings reference
 
-Settings are read from `~/.pi/agent/settings.json` and project `.pi/settings.json`. All keys are optional; omitting `piVim` is equivalent to the defaults. Project settings override global for `clipboardMirror`, `exCommand.piDispatch`, `modeColors`, `borderSync`, and `labelSync` (each replaced as a whole object, missing modes defaulting below); `modeChange` and `exCommand.copyInputToClipboard` are user-global only — `modeChange` because it executes shell commands.
+Settings are read from `~/.pi/agent/settings.json` and project `.pi/settings.json`. All keys are optional; omitting `piVim` is equivalent to the defaults. Project settings override global for `clipboardMirror`, `exCommand.piDispatch`, `modeColors`, `borderSync`, `labelSync`, and `insertEnterBehaviour` (object values are replaced as a whole, missing modes defaulting below); `modeChange` and `exCommand.copyInputToClipboard` are user-global only — `modeChange` because it executes shell commands.
 
 Default-equivalent `settings.json`:
 
@@ -380,7 +380,8 @@ Default-equivalent `settings.json`:
       "normal": "mode",
       "visual": "mode",
       "ex": "mode"
-    }
+    },
+    "insertEnterBehaviour": "submit"
   }
 }
 ```
@@ -431,6 +432,10 @@ Give insert a solid mode color, let normal defer to thinking, and make both mode
 ```
 
 `syncBorderColorWithMode` is deprecated but still accepted: `false` (or absent) is the defaults; `true` sets `borderSync` to `mode` for every mode; the never-released `"inherit"` sets both `borderSync` and `labelSync` to `thinking` for every mode. A present `borderSync` or `labelSync` wins over it for that surface.
+
+### insertEnterBehaviour
+
+`submit` (default) keeps Pi's Enter, which sends the prompt. `newline` makes Enter open a line in insert mode, the way it does in a vim buffer, and leaves submitting to Enter in normal mode (`Esc`, then Enter). Enter still accepts the highlighted entry while the completion menu is open.
 
 ### modeColors
 

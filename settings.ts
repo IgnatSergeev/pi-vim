@@ -19,6 +19,13 @@ export type ExCommandSettings = {
 
 export type BorderSyncMode = boolean | "inherit";
 
+// What Enter does in insert mode:
+//    - "submit"    submits the prompt;
+//    - "newline"   opens a new line.
+export type InsertEnterBehaviour = "submit" | "newline";
+
+export const DEFAULT_INSERT_ENTER_BEHAVIOUR: InsertEnterBehaviour = "submit";
+
 // Per-surface paint policy for a single mode:
 //   - "mode"     always paint that mode's color;
 //   - "host"     always show the host's current border color;
@@ -42,6 +49,7 @@ export type PiVimSettings = {
   borderSync?: SurfaceSyncMap;
   // Per-mode paint policy for pi-vim's footer mode label. Default: "mode".
   labelSync?: SurfaceSyncMap;
+  insertEnterBehaviour?: InsertEnterBehaviour;
   // Deprecated, never-released alias superseded by borderSync/labelSync; still
   // accepted and translated in `resolveSurfaceSyncMaps`. `false`/absent → both
   // maps at their defaults; `true` → borderSync all "mode"; the never-released
@@ -77,6 +85,12 @@ function colors(v: unknown) {
     if (T.test(t)) r[k] = t;
   }
   return Object.keys(r)[0] ? r : undefined;
+}
+
+function oneOf<T extends string>(v: unknown, allowed: readonly T[]) {
+  return typeof v === "string" && (allowed as readonly string[]).includes(v)
+    ? (v as T)
+    : undefined;
 }
 
 const BORDER_SYNC_DEFAULT: SurfaceSync = "host";
@@ -227,6 +241,12 @@ export function readPiVimBorderSync(
   return surfaceMap(get(g, "borderSync"), BORDER_SYNC_DEFAULT);
 }
 
+export function readPiVimInsertEnterBehaviour(g: unknown, p: unknown) {
+  const v = get(p, "insertEnterBehaviour");
+  const raw = v === M ? get(g, "insertEnterBehaviour") : v;
+  return oneOf(raw, ["submit", "newline"] as const);
+}
+
 export function readPiVimLabelSync(
   g: unknown,
   p: unknown,
@@ -271,6 +291,7 @@ function disk(cwd: string): PiVimSettings {
     globalExCommand: readPiVimGlobalExCommandSetting(g, p),
     modeColors: readPiVimModeColors(g, p),
     modeChange: readPiVimModeChange(g, p),
+    insertEnterBehaviour: readPiVimInsertEnterBehaviour(g, p),
     borderSync: readPiVimBorderSync(g, p),
     labelSync: readPiVimLabelSync(g, p),
     syncBorderColorWithMode: readPiVimBorderSyncSetting(g, p),
