@@ -154,8 +154,6 @@ const REPEATABLE_COMMAND_START_KEYS = new Set([
 // Normal-mode commands that must never run while a visual selection is live.
 // They are swallowed instead of falling through to the normal-mode dispatch.
 const VISUAL_IGNORED_KEYS = new Set([
-  "p",
-  "P",
   "r",
   "J",
   "u",
@@ -2313,6 +2311,64 @@ export class ModalEditor extends CustomEditor {
     this.moveCursorToAbsoluteIndex(startAbs);
   }
 
+  /**
+   * Replace the selection with the register, as vim's visual `p` does.
+   *
+   * The put text is read before the delete, because deleting the selection is
+   * what fills the unnamed register with the replaced text (vim's swap). `P`
+   * restores the register afterwards, so the same payload can be put over one
+   * selection after another.
+   */
+  private putOverVisualSelection(preserveRegister: boolean): void {
+    const text = this.getPasteRegisterText();
+    // Nothing to put: leave the selection alone rather than deleting it.
+    if (!text) return;
+
+    const linewiseRegister = text.endsWith("\n");
+    const anchor = this.getVisualAnchor();
+    const cursor = this.getCursor();
+
+    if (this.mode === "visual-line") {
+      const { startLine } = getVisualLineRange(anchor, cursor);
+      const payload = linewiseRegister ? text : `${text}\n`;
+      this.applyVisualOperator("d", true);
+
+      const lines = this.getLines();
+      const lastLine = lines.length - 1;
+      if (lines.length === 1 && (lines[0] ?? "") === "") {
+        // The delete emptied the buffer; putting line-wise here would leave a
+        // trailing blank line, so type the payload's lines in place instead.
+        this.putCharwiseAtCursor(payload.slice(0, -1));
+        this.moveCursorToLineStart(0);
+        this.moveCursorToFirstNonWhitespace();
+      } else if (startLine <= lastLine) {
+        this.moveCursorToLineStart(startLine);
+        this.putLinewiseAbove(payload);
+      } else {
+        // The selection ran to the end of the buffer: put below what is left.
+        this.moveCursorToLineStart(lastLine);
+        this.putLinewiseBelow(payload);
+      }
+    } else {
+      const { startAbs } = this.getVisualCharwiseRange();
+      this.applyVisualOperator("d", false);
+      // The operator lands the cursor where a bare `d` wants it; the put needs
+      // the deleted span's own start.
+      this.moveCursorToAbsoluteIndex(startAbs);
+
+      if (linewiseRegister) {
+        // A line-wise payload splits the line and takes whole lines between
+        // the two halves.
+        super.handleInput(NEWLINE);
+        this.putLinewiseAbove(text);
+      } else {
+        this.putCharwiseAtCursor(text);
+      }
+    }
+
+    if (preserveRegister) this.writeToRegister(text, "yank");
+  }
+
   /** Swap the anchor and the cursor so the other end of the selection moves. */
   private swapVisualEnds(): void {
     const anchor = this.getVisualAnchor();
@@ -2330,6 +2386,11 @@ export class ModalEditor extends CustomEditor {
    */
   private handleVisualMode(data: string): boolean {
     if (this.pendingG || this.pendingMotion) return false;
+
+    if (data === "p" || data === "P") {
+      this.putOverVisualSelection(data === "P");
+      return true;
+    }
 
     const linewise = this.mode === "visual-line";
 
@@ -4043,37 +4104,20 @@ export class ModalEditor extends CustomEditor {
     this.moveCursorToCol(graphemes[graphemes.length - 1]?.start ?? 0);
   }
 
-  private putAfter(): void {
-    const count = this.takeTotalCount(1);
-    const text = this.getPasteRegisterText();
-    if (!text) return;
-    const safeCount = Math.min(
+  // Repeats that fit under the payload safety cap.
+  private getSafePutCount(text: string, count: number): number {
+    return Math.min(
       count,
       Math.max(1, Math.floor(ModalEditor.PUT_SIZE_LIMIT / text.length)),
     );
+  }
 
-    if (text.endsWith("\n")) {
-      const content = text.slice(0, -1);
-      const targetLine = this.getCursor().line + 1;
-      for (let i = 0; i < safeCount; i++) {
-        super.handleInput(CTRL_E);
-        super.handleInput(NEWLINE);
-        for (const char of content) {
-          super.handleInput(char === "\n" ? NEWLINE : char);
-        }
-      }
-      // Vim: line-wise `p` leaves the cursor on the first non-blank of the
-      // first inserted line (one line below the original cursor). An
-      // all-whitespace first line lands at col 0, sharing the `^` divergence.
-      this.moveCursorToLineStart(targetLine);
-      this.moveCursorToFirstNonWhitespace();
-      return;
-    }
-
-    if (!this.isCursorAtOrPastEol()) {
-      super.handleInput(ESC_RIGHT);
-    }
-    for (let i = 0; i < safeCount; i++) {
+  /**
+   * Type `text` into the buffer at the cursor and land on its last grapheme,
+   * the way a character-wise put ends in vim.
+   */
+  private putCharwiseAtCursor(text: string, count: number = 1): void {
+    for (let i = 0; i < this.getSafePutCount(text, count); i++) {
       for (const char of text) {
         super.handleInput(char === "\n" ? NEWLINE : char);
       }
@@ -4081,40 +4125,69 @@ export class ModalEditor extends CustomEditor {
     this.moveCursorToPreviousGraphemeStart();
   }
 
+  /**
+   * Insert a line-wise payload (trailing newline included) as whole lines
+   * above the cursor's line, leaving the cursor on the first non-blank of the
+   * first inserted line. An all-whitespace first line lands at col 0, sharing
+   * the `^` divergence.
+   */
+  private putLinewiseAbove(text: string, count: number = 1): void {
+    const content = text.slice(0, -1);
+    const targetLine = this.getCursor().line;
+    for (let i = 0; i < this.getSafePutCount(text, count); i++) {
+      super.handleInput(CTRL_A);
+      super.handleInput(NEWLINE);
+      super.handleInput(ESC_UP);
+      for (const char of content) {
+        super.handleInput(char === "\n" ? NEWLINE : char);
+      }
+    }
+    this.moveCursorToLineStart(targetLine);
+    this.moveCursorToFirstNonWhitespace();
+  }
+
+  /** `putLinewiseAbove`, one line further down. */
+  private putLinewiseBelow(text: string, count: number = 1): void {
+    const content = text.slice(0, -1);
+    const targetLine = this.getCursor().line + 1;
+    for (let i = 0; i < this.getSafePutCount(text, count); i++) {
+      super.handleInput(CTRL_E);
+      super.handleInput(NEWLINE);
+      for (const char of content) {
+        super.handleInput(char === "\n" ? NEWLINE : char);
+      }
+    }
+    this.moveCursorToLineStart(targetLine);
+    this.moveCursorToFirstNonWhitespace();
+  }
+
+  private putAfter(): void {
+    const count = this.takeTotalCount(1);
+    const text = this.getPasteRegisterText();
+    if (!text) return;
+
+    if (text.endsWith("\n")) {
+      this.putLinewiseBelow(text, count);
+      return;
+    }
+
+    if (!this.isCursorAtOrPastEol()) {
+      super.handleInput(ESC_RIGHT);
+    }
+    this.putCharwiseAtCursor(text, count);
+  }
+
   private putBefore(): void {
     const count = this.takeTotalCount(1);
     const text = this.getPasteRegisterText();
     if (!text) return;
-    const safeCount = Math.min(
-      count,
-      Math.max(1, Math.floor(ModalEditor.PUT_SIZE_LIMIT / text.length)),
-    );
 
     if (text.endsWith("\n")) {
-      const content = text.slice(0, -1);
-      const targetLine = this.getCursor().line;
-      for (let i = 0; i < safeCount; i++) {
-        super.handleInput(CTRL_A);
-        super.handleInput(NEWLINE);
-        super.handleInput(ESC_UP);
-        for (const char of content) {
-          super.handleInput(char === "\n" ? NEWLINE : char);
-        }
-      }
-      // Vim: line-wise `P` leaves the cursor on the first non-blank of the
-      // first inserted line (the cursor's original line, since `P` inserts
-      // above). All-whitespace first line lands at col 0 (`^` divergence).
-      this.moveCursorToLineStart(targetLine);
-      this.moveCursorToFirstNonWhitespace();
+      this.putLinewiseAbove(text, count);
       return;
     }
 
-    for (let i = 0; i < safeCount; i++) {
-      for (const char of text) {
-        super.handleInput(char === "\n" ? NEWLINE : char);
-      }
-    }
-    this.moveCursorToPreviousGraphemeStart();
+    this.putCharwiseAtCursor(text, count);
   }
 
   private deleteRange(

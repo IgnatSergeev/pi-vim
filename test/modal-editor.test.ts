@@ -9605,11 +9605,11 @@ describe("visual mode — entering and leaving", () => {
   });
 
   it("a count before a swallowed visual key does not leak into the next motion", () => {
-    // `p` is inert in visual mode (pi swallows it), so the pending count must
-    // be dropped: `v2pld` must behave exactly like `vld` — extend by one and
+    // `~` is inert in visual mode (pi swallows it), so the pending count must
+    // be dropped: `v2~ld` must behave exactly like `vld` — extend by one and
     // delete two chars — not carry the 2 into `l` and over-delete.
     const leaked = createEditorWithSpy("hello");
-    sendKeys(leaked.editor, ["v", "2", "p", "l", "d"]);
+    sendKeys(leaked.editor, ["v", "2", "~", "l", "d"]);
 
     const baseline = createEditorWithSpy("hello");
     sendKeys(baseline.editor, ["v", "l", "d"]);
@@ -9712,12 +9712,20 @@ describe("visual mode — inert normal-mode commands", () => {
     assert.equal(editor.getMode(), "visual");
   });
 
-  it("p and P do not put the register", () => {
-    const { editor } = createEditorWithSpy("hello");
-    editor.setRegister("XY");
-    sendKeys(editor, ["v", "p", "P"]);
-    assert.equal(editor.getText(), "hello");
-    assert.equal(editor.getMode(), "visual");
+  it("p and P replace the selection with the register", () => {
+    const put = createEditorWithSpy("hello");
+    put.editor.setRegister("XY");
+    sendKeys(put.editor, ["v", "p"]);
+    assert.equal(put.editor.getText(), "XYello");
+    assert.equal(put.editor.getMode(), "normal");
+    // `p` swaps: the replaced text becomes the register.
+    assert.equal(put.editor.getRegister(), "h");
+
+    const keep = createEditorWithSpy("hello");
+    keep.editor.setRegister("XY");
+    sendKeys(keep.editor, ["v", "P"]);
+    assert.equal(keep.editor.getText(), "XYello");
+    assert.equal(keep.editor.getRegister(), "XY");
   });
 
   it("i, a, A and I do not open insert mode", () => {

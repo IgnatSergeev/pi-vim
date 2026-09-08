@@ -31,6 +31,80 @@ function seed(editor: ModalEditor, text: string): void {
   editor.handleInput("0");
 }
 
+describe("put over a visual selection", () => {
+  const seedVisual = (text: string, register: string, keys: string[]) => {
+    const { editor } = createEditor();
+    for (const char of text) editor.handleInput(char);
+    editor.handleInput(ESC);
+    editor.setRegister(register);
+    const internal = editor as unknown as {
+      state: { cursorLine: number; cursorCol: number };
+    };
+    internal.state.cursorLine = 0;
+    internal.state.cursorCol = 0;
+    for (const key of keys) editor.handleInput(key);
+    return editor;
+  };
+
+  it("replaces a character-wise selection and lands on the last character", () => {
+    const editor = seedVisual("abcd", "XY", ["v", "l", "p"]);
+    assert.equal(editor.getText(), "XYcd");
+    assert.equal(editor.getMode(), "normal");
+    assert.equal(editor.getCursor().col, 1);
+  });
+
+  it("puts the replaced text into the register, so `p` swaps", () => {
+    const editor = seedVisual("abcd", "XY", ["v", "l", "p"]);
+    assert.equal(editor.getRegister(), "ab");
+  });
+
+  it("keeps the register with `P`, so the same payload can be put again", () => {
+    const editor = seedVisual("abcd", "XY", ["v", "l", "P"]);
+    assert.equal(editor.getRegister(), "XY");
+    editor.handleInput("v");
+    editor.handleInput("P");
+    // The kept register replaces the `Y` the cursor landed on.
+    assert.equal(editor.getText(), "XXYcd");
+  });
+
+  it("replaces whole lines in V-LINE mode", () => {
+    const editor = seedVisual("one\ntwo\nthree", "NEW\n", ["j", "V", "p"]);
+    assert.equal(editor.getText(), "one\nNEW\nthree");
+  });
+
+  it("replaces the last lines of the buffer", () => {
+    const editor = seedVisual("one\ntwo", "NEW\n", ["j", "V", "p"]);
+    assert.equal(editor.getText(), "one\nNEW");
+  });
+
+  it("replaces every line without leaving a blank behind", () => {
+    const editor = seedVisual("one\ntwo", "NEW\n", ["V", "j", "p"]);
+    assert.equal(editor.getText(), "NEW");
+  });
+
+  it("puts a line-wise register over a character-wise selection as lines", () => {
+    const editor = seedVisual("abcd", "NEW\n", ["l", "v", "p"]);
+    assert.equal(editor.getText(), "a\nNEW\ncd");
+  });
+
+  it("puts a character-wise register over a V-LINE selection as a line", () => {
+    const editor = seedVisual("one\ntwo", "NEW", ["V", "p"]);
+    assert.equal(editor.getText(), "NEW\ntwo");
+  });
+
+  it("undoes the replacement as one change", () => {
+    const editor = seedVisual("abcd", "XY", ["v", "l", "p"]);
+    editor.handleInput("u");
+    assert.equal(editor.getText(), "abcd");
+  });
+
+  it("leaves the selection alone when the register is empty", () => {
+    const editor = seedVisual("abcd", "", ["v", "l", "p"]);
+    assert.equal(editor.getText(), "abcd");
+    assert.equal(editor.getMode(), "visual");
+  });
+});
+
 describe("visual selection highlighting", () => {
   const OPEN = "\x1b[48;2;45;63;118m";
 

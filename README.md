@@ -334,6 +334,7 @@ Typing done in an implicit insert session is repeatable too: the prompt opens in
 | `Esc` / `Ctrl+[` | Leave visual mode; the cursor stays where it is |
 | `o` / `O` | Swap the anchor and the cursor so the other end of the selection moves |
 | `d` / `x` | Delete the selection; the cursor lands on its first character |
+| `p` / `P` | Replace the selection with the register; `p` keeps the replaced text in the register, `P` keeps the payload |
 | `y` | Yank the selection; the cursor rewinds to its start |
 | `c` / `s` | Delete the selection and enter Insert mode |
 | `D` / `X` | Delete every touched line, even from a character-wise selection |
@@ -344,7 +345,7 @@ Typing done in an implicit insert session is repeatable too: the prompt opens in
 
 Line-wise selections put a trailing newline in the register, so a following `p` pastes whole lines. A count typed before `v` or `V` is discarded rather than sizing the selection (`2v` behaves as `v`).
 
-Visual-mode edits are deliberately **not** dot-repeatable: running one clears the stored repeatable command, so a later `.` does nothing instead of replaying an unrelated change. Keys with no visual-mode meaning here — `p`, `P`, `r`, `J`, `u`, `<C-r>`, `.`, `:`, `i`, `a`, `A`, `I`, `~`, `>`, `<` — are inert while a selection is live rather than falling through to their normal-mode behaviour.
+Visual-mode edits are deliberately **not** dot-repeatable: running one clears the stored repeatable command, so a later `.` does nothing instead of replaying an unrelated change. Keys with no visual-mode meaning here — `r`, `J`, `u`, `<C-r>`, `.`, `:`, `i`, `a`, `A`, `I`, `~`, `>`, `<` — are inert while a selection is live rather than falling through to their normal-mode behaviour.
 
 ---
 
@@ -482,7 +483,7 @@ pi-vim does not bundle any such tool and does not care which one you use — any
 | Visual `$` motion | Moves to the visible EOL position | Moves to the last character |
 | Line-wise put onto an all-whitespace first line | Lands at col 0 (shares the `^`/`I` all-whitespace behavior) | `^` lands on the last char of the line |
 | Undo / redo | Vim-change-scoped: one `u` reverts one whole vim change (insert session or change command), one `<C-r>` redoes it, and `.` is its own unit; a linear undo/redo list, no undo tree | Full per-change undo tree with `g+`/`g-`/`:earlier` time-travel |
-| Visual mode | `v` and `V` with `d`/`x`, `y`, `c`/`s` and the line-forcing `D`/`X`/`Y`/`C`/`S`; no `<C-v>`, no visual `p`/`r`/`J`/`~`/`>`/`<`/`gv`, no text objects, no `{count}v` | `v`, `V`, `<C-v>` with the full operator set |
+| Visual mode | `v` and `V` with `d`/`x`, `y`, `c`/`s` and the line-forcing `D`/`X`/`Y`/`C`/`S`, plus `p`/`P`; no `<C-v>`, no visual `r`/`J`/`~`/`>`/`<`/`gv`, no text objects, no `{count}v` | `v`, `V`, `<C-v>` with the full operator set |
 | Visual selection rendering | Highlighted with a truecolor background | Selection is highlighted |
 | Visual line-wise delete | Leaves the cursor at column 0, like `dd` does today | Preserves the cursor column |
 | Visual dot-repeat | A visual edit clears the repeatable command; `.` afterwards does nothing | `.` repeats the operator over an equally sized region |
