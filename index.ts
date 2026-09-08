@@ -109,6 +109,11 @@ import {
   type VisualPosition,
 } from "./visual.js";
 import {
+  highlightLayoutLine,
+  type LayoutLine,
+  mapLayoutLines,
+} from "./visual-highlight.js";
+import {
   WordBoundaryCache,
   type WordMotionDirection,
   type WordMotionTarget,
@@ -360,6 +365,7 @@ export class ModalEditor extends CustomEditor {
     this.labelSync = opts?.labelSync ?? null;
     this.labelTransform = opts?.labelTransform ?? null;
     this.installModeBorderColorizer();
+    this.installVisualHighlight();
   }
 
   setClipboardFn(fn: (text: string, signal?: AbortSignal) => unknown): void {
@@ -2159,6 +2165,78 @@ export class ModalEditor extends CustomEditor {
         getInclusiveEndColumn(endLine, end.col) +
         (includesNewline ? 1 : 0),
     };
+  }
+
+  /**
+   * Selected column span per logical line, or null when nothing is selected.
+   * Line-wise selections take whole lines; character-wise ones take the
+   * inclusive grapheme under the later endpoint, exactly like the operators.
+   */
+  private getVisualSelectionByLine(
+    lines: readonly string[],
+  ): Map<number, { start: number; end: number }> | null {
+    if (!isVisualMode(this.mode)) return null;
+    const anchor = this.getVisualAnchor();
+    const cursor = this.getCursor();
+    const selection = new Map<number, { start: number; end: number }>();
+
+    if (this.mode === "visual-line") {
+      const { startLine, endLine } = getVisualLineRange(anchor, cursor);
+      for (let i = startLine; i <= endLine; i++) {
+        selection.set(i, { start: 0, end: (lines[i] ?? "").length });
+      }
+      return selection;
+    }
+
+    const { start, end } = orderVisualEndpoints(anchor, cursor);
+    const endColumn = getInclusiveEndColumn(lines[end.line] ?? "", end.col);
+    for (let i = start.line; i <= end.line; i++) {
+      const length = (lines[i] ?? "").length;
+      selection.set(i, {
+        start: i === start.line ? start.col : 0,
+        end: i === end.line ? endColumn : length,
+      });
+    }
+    return selection;
+  }
+
+  /**
+   * Wrap the host's private layout pass so the selection is painted into the
+   * layout lines before the block cursor is drawn into them. Patched on the
+   * instance (not the prototype) because the host method is private.
+   */
+  private installVisualHighlight(): void {
+    const host = this as unknown as {
+      layoutText?: (contentWidth: number) => LayoutLine[];
+    };
+    const base = host.layoutText;
+    if (typeof base !== "function") return;
+    const layoutText = base.bind(this);
+    host.layoutText = (contentWidth: number): LayoutLine[] =>
+      this.decorateVisualSelection(layoutText(contentWidth), contentWidth);
+  }
+
+  private decorateVisualSelection(
+    layoutLines: LayoutLine[],
+    contentWidth: number,
+  ): LayoutLine[] {
+    if (!isVisualMode(this.mode)) return layoutLines;
+    const lines = this.getLines();
+    const selection = this.getVisualSelectionByLine(lines);
+    if (!selection) return layoutLines;
+    const mapping = mapLayoutLines(
+      layoutLines,
+      lines,
+      (line) => visibleWidth(line) <= contentWidth,
+    );
+    if (!mapping) return layoutLines;
+
+    return layoutLines.map((layoutLine, index) => {
+      const at = mapping[index];
+      const span = at ? selection.get(at.line) : undefined;
+      if (!at || !span) return layoutLine;
+      return highlightLayoutLine(layoutLine, at.offset, span);
+    });
   }
 
   private clampCursorToLastGrapheme(): void {
