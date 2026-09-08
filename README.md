@@ -435,7 +435,7 @@ Give insert a solid mode color, let normal defer to thinking, and make both mode
 
 ### insertEnterBehaviour
 
-`submit` (default) keeps Pi's Enter, which sends the prompt. `newline` makes Enter open a line in insert mode, the way it does in a vim buffer, and leaves submitting to Enter in normal mode (`Esc`, then Enter). Enter still accepts the highlighted entry while the completion menu is open.
+`submit` (default) keeps Pi's Enter, which sends the prompt. `newline` makes Enter open a line in insert mode, the way it does in a vim buffer, and leaves submitting to Enter in normal mode (`Esc`, then Enter). Enter still accepts the highlighted entry while the completion menu is open, and Escape now closes that menu when it leaves insert mode, so the normal-mode Enter always submits instead of accepting a stale completion.
 
 ### modeColors
 

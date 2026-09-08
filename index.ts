@@ -1464,6 +1464,19 @@ export class ModalEditor extends CustomEditor {
     }
   }
 
+  /**
+   * Close the host's completion menu when Escape leaves insert mode, the way
+   * vim closes its popup. A menu left open outlives insert mode and the next
+   * Enter — the normal-mode submit — is read as "accept the highlighted entry"
+   * at the normal-mode cursor, which rewrites the prompt instead of sending it.
+   */
+  private cancelHostAutocomplete(): void {
+    if (!this.isShowingAutocomplete()) return;
+    const host = this as unknown as { cancelAutocomplete?: () => void };
+    host.cancelAutocomplete?.();
+    (this as unknown as ModalEditorInternals).tui?.requestRender?.();
+  }
+
   private clearUnderlyingPasteStateIfActive(): void {
     const editor = this as unknown as {
       isInPaste?: boolean;
@@ -1508,6 +1521,7 @@ export class ModalEditor extends CustomEditor {
     }
     if ("insert" === this.mode) {
       this.clearUnderlyingPasteStateIfActive();
+      this.cancelHostAutocomplete();
       this.setMode("normal");
       if (this.getCursor().col > 0) this.moveCursorBy(-1);
     } else {

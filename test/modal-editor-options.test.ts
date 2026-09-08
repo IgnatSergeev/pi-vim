@@ -97,6 +97,46 @@ describe("enter in insert mode", () => {
   });
 });
 
+describe("escape closes the completion menu", () => {
+  type AutocompleteEditor = ModalEditor & {
+    setAutocompleteProvider: (provider: unknown) => void;
+    isShowingAutocomplete: () => boolean;
+  };
+
+  const wait = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("leaves no menu open for the normal-mode submit to accept", async () => {
+    const { editor, submits } = createEditor({
+      insertEnterBehaviour: "newline",
+    });
+    const autocomplete = editor as AutocompleteEditor;
+    autocomplete.setAutocompleteProvider({
+      async getSuggestions(lines: string[], line: number, col: number) {
+        const before = (lines[line] ?? "").slice(0, col);
+        const match = before.match(/^\/(\w*)$/);
+        if (!match || !"help".startsWith(match[1] ?? "")) return null;
+        return { items: [{ value: "/help", label: "/help" }], prefix: before };
+      },
+      applyCompletion(lines: string[], line: number, col: number) {
+        const next = [...lines];
+        next[line] = "/help ";
+        return { lines: next, cursorLine: line, cursorCol: col };
+      },
+    });
+
+    for (const key of "/he") editor.handleInput(key);
+    await wait(40);
+    assert.equal(autocomplete.isShowingAutocomplete(), true);
+
+    editor.handleInput(ESC);
+    assert.equal(autocomplete.isShowingAutocomplete(), false);
+
+    editor.handleInput(ENTER);
+    assert.deepEqual(submits, ["/he"]);
+  });
+});
+
 describe("put over a visual selection", () => {
   const seedVisual = (text: string, register: string, keys: string[]) => {
     const { editor } = createEditor();
