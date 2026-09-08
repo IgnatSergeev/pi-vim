@@ -2493,7 +2493,9 @@ export class ModalEditor extends CustomEditor {
     }
   }
 
-  private handleNormalMode(data: string): void {
+  private handleNormalMode(input: string): void {
+    const data = isBackspaceLikeInput(input) ? "h" : input;
+
     if (this.pendingG) {
       if (isDigit(data)) {
         this.pendingGCount += data;
