@@ -467,6 +467,7 @@ pi-vim does not bundle any such tool and does not care which one you use — any
 - `piVim.clipboardMirror = "never"` disables write mirroring while keeping internal register writes synchronous.
 - Rapid mirrored writes coalesce: only the latest pending value is guaranteed to be mirrored.
 - `p` / `P` read the OS clipboard first when no local write was skipped by policy, falling back to the shadow on read failure/timeout.
+- The read uses the session's own clipboard tool before the bundled addon: `wl-paste` on Wayland, then `xclip`/`xsel` on X11, `pbpaste` on macOS, and the Node helper around `@mariozechner/clipboard` last. That addon is X11-only, so on a Wayland compositor it would otherwise read an empty X11 selection while pi-vim's writes — which Pi sends through `wl-copy` — land in the Wayland clipboard, and text copied in a native app would never reach `p`. Each reader is skipped on a missing binary, a non-zero exit (how `wl-paste` reports an empty clipboard), or a timeout.
 - If policy skipped the last local write, `p` / `P` use the shadow so delete/yank → put works without touching the OS clipboard.
 - While a mirror is in flight, `p` / `P` use the shadow so immediate yank/delete → put stays ordered.
 - If the last mirror write failed or was skipped by the mirror circuit breaker, `p` / `P` use the non-empty shadow until a mirror write lands again, so put never trusts a stale OS clipboard.

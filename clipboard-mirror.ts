@@ -14,6 +14,7 @@ export type ClipboardWriteFn = (
   signal: AbortSignal,
 ) => Promise<void>;
 export type ClipboardReadFn = () => string | null;
+export type ClipboardCommand = { command: string; args: string[] };
 type ClipboardProcess = ReturnType<typeof spawn>;
 
 type ClipboardCircuitBreaker = {
@@ -138,7 +139,60 @@ function getClipboardHelperSources(): ClipboardHelperSources | null {
   return clipboardHelperSources;
 }
 
+/**
+ * Platform aware native clipboard readers.
+ * Supports wayland unlike `@mariozechner/clipboard`.
+ */
+export function nativeClipboardReadCommands(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): ClipboardCommand[] {
+  if (platform === "darwin") return [{ command: "pbpaste", args: [] }];
+  if (platform !== "linux") return [];
+
+  const commands: ClipboardCommand[] = [];
+  if (env.WAYLAND_DISPLAY || env.XDG_SESSION_TYPE === "wayland") {
+    commands.push({
+      command: "wl-paste",
+      args: ["--no-newline", "--type", "text"],
+    });
+  }
+  if (env.DISPLAY) {
+    commands.push({
+      command: "xclip",
+      args: ["-selection", "clipboard", "-o"],
+    });
+    commands.push({ command: "xsel", args: ["--clipboard", "--output"] });
+  }
+  return commands;
+}
+
+function runClipboardReadCommand({
+  command,
+  args,
+}: ClipboardCommand): string | null {
+  try {
+    const result = spawnSync(command, args, {
+      encoding: "utf8",
+      maxBuffer: CLIPBOARD_READ_MAX_BUFFER_BYTES,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: CLIPBOARD_READ_TIMEOUT_MS,
+      windowsHide: true,
+    });
+
+    if (result.error || result.status !== 0 || result.signal) return null;
+    return result.stdout ?? "";
+  } catch {
+    return null;
+  }
+}
+
 export function readClipboardInChildProcess(): string | null {
+  for (const command of nativeClipboardReadCommands()) {
+    const text = runClipboardReadCommand(command);
+    if (text !== null) return text;
+  }
+
   const helperSources = getClipboardHelperSources();
   if (!helperSources) return null;
 
