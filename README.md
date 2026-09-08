@@ -351,7 +351,7 @@ Visual-mode edits are deliberately **not** dot-repeatable: running one clears th
 
 ## settings reference
 
-Settings are read from `~/.pi/agent/settings.json` and project `.pi/settings.json`. All keys are optional; omitting `piVim` is equivalent to the defaults. Project settings override global for `clipboardMirror`, `exCommand.piDispatch`, `modeColors`, `borderSync`, `labelSync`, and `insertEnterBehaviour` (object values are replaced as a whole, missing modes defaulting below); `modeChange` and `exCommand.copyInputToClipboard` are user-global only — `modeChange` because it executes shell commands.
+Settings are read from `~/.pi/agent/settings.json` and project `.pi/settings.json`. All keys are optional; omitting `piVim` is equivalent to the defaults. Project settings override global for `clipboardMirror`, `exCommand.piDispatch`, `modeColors`, `borderSync`, `labelSync`, `labelPlacement`, and `insertEnterBehaviour` (object values are replaced as a whole, missing modes defaulting below); `modeChange` and `exCommand.copyInputToClipboard` are user-global only — `modeChange` because it executes shell commands.
 
 Default-equivalent `settings.json`:
 
@@ -381,6 +381,7 @@ Default-equivalent `settings.json`:
       "visual": "mode",
       "ex": "mode"
     },
+    "labelPlacement": "editor",
     "insertEnterBehaviour": "submit"
   }
 }
@@ -432,6 +433,12 @@ Give insert a solid mode color, let normal defer to thinking, and make both mode
 ```
 
 `syncBorderColorWithMode` is deprecated but still accepted: `false` (or absent) is the defaults; `true` sets `borderSync` to `mode` for every mode; the never-released `"inherit"` sets both `borderSync` and `labelSync` to `thinking` for every mode. A present `borderSync` or `labelSync` wins over it for that surface.
+
+### labelPlacement
+
+`editor` (default) draws the mode label on pi-vim's own status line — the editor's bottom border; `footer` publishes it to Pi's footer instead, as the `pi-vim` extension status.
+
+A footer that renders extension statuses decides where the published label lands.
 
 ### insertEnterBehaviour
 

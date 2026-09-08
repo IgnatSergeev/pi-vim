@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { ModalEditor } from "../index.js";
-import { readPiVimInsertEnterBehaviour } from "../settings.js";
+import {
+  readPiVimInsertEnterBehaviour,
+  readPiVimLabelPlacement,
+} from "../settings.js";
 import { stubKeybindings, stubTheme, stubTui } from "./harness.js";
 
 type ModalEditorOptions = ConstructorParameters<typeof ModalEditor>[3];
@@ -13,17 +16,20 @@ const ENTER = "\r";
 function createEditor(opts?: ModalEditorOptions): {
   editor: ModalEditor;
   submits: string[];
+  statuses: (string | undefined)[];
 } {
   const submits: string[] = [];
+  const statuses: (string | undefined)[] = [];
   const editor = new ModalEditor(stubTui, stubTheme, stubKeybindings, opts);
   editor.setClipboardFn(() => {});
   editor.setClipboardReadFn(() => null);
+  editor.setStatusFn((label) => statuses.push(label));
   (editor as unknown as { onSubmit: (text: string) => void }).onSubmit = (
     text: string,
   ) => {
     submits.push(text);
   };
-  return { editor, submits };
+  return { editor, submits, statuses };
 }
 
 /** Type `text` in insert mode, then leave to normal mode at line start. */
@@ -33,17 +39,48 @@ function seed(editor: ModalEditor, text: string): void {
   editor.handleInput("0");
 }
 
+describe("mode label placement", () => {
+  it("draws the label on pi-vim's status line by default", () => {
+    const { editor, statuses } = createEditor();
+    assert.ok((editor.render(40).at(-1) ?? "").endsWith(" INSERT "));
+    assert.deepEqual(statuses, []);
+  });
+
+  it("publishes the label to the footer and drops it from the editor", () => {
+    const { editor, statuses } = createEditor({ labelPlacement: "footer" });
+    const last = editor.render(40).at(-1) ?? "";
+    assert.equal(last.includes("INSERT"), false);
+    assert.deepEqual(statuses, [" INSERT "]);
+  });
+
+  it("republishes only when the label changed", () => {
+    const { editor, statuses } = createEditor({ labelPlacement: "footer" });
+    editor.render(40);
+    editor.render(40);
+    editor.handleInput(ESC);
+    editor.render(40);
+    editor.render(40);
+    assert.deepEqual(statuses, [" INSERT ", " NORMAL "]);
+  });
+});
+
 describe("new behavior settings readers", () => {
   it("reads the label, enter, paste, and highlight settings", () => {
     const global = {
       piVim: {
+        labelPlacement: "footer",
         insertEnterBehaviour: "newline",
       },
     };
+    assert.equal(readPiVimLabelPlacement(global, {}), "footer");
     assert.equal(readPiVimInsertEnterBehaviour(global, {}), "newline");
   });
 
   it("ignores unknown values", () => {
+    assert.equal(
+      readPiVimLabelPlacement({ piVim: { labelPlacement: "side" } }, {}),
+      undefined,
+    );
     assert.equal(
       readPiVimInsertEnterBehaviour(
         { piVim: { insertEnterBehaviour: "maybe" } },

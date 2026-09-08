@@ -65,8 +65,10 @@ import {
 import {
   DEFAULT_EX_COMMAND_SETTINGS,
   DEFAULT_INSERT_ENTER_BEHAVIOUR,
+  DEFAULT_LABEL_PLACEMENT,
   type ExCommandSettings,
   type InsertEnterBehaviour,
+  type LabelPlacement,
   readPiVimSettings,
   resolveExCommandSettings,
   resolveSurfaceSyncMaps,
@@ -263,6 +265,7 @@ type ModalEditorOptions = {
   // Reverse-video transform applied to the label. When the label defers to the
   // host color it is wrapped with this so it keeps its block styling.
   labelTransform?: ((s: string) => string) | null;
+  labelPlacement?: LabelPlacement;
   insertEnterBehaviour?: InsertEnterBehaviour;
 };
 
@@ -319,6 +322,12 @@ export class ModalEditor extends CustomEditor {
   private readonly cursorShapeRuntime: CursorShapeRuntime | null;
   private lastCursorShapeSequence: CursorShapeSequence | null = null;
   private lastLineCache = { l: "", w: 0, label: "", result: "" };
+  private readonly labelPlacement: LabelPlacement;
+  // Publishes the mode label to pi's footer as an extension status.
+  // Set by the extension entry point;
+  // a no-op the label stays in the editor's own status line.
+  private statusFn: (label: string | undefined) => void = () => {};
+  private lastPublishedStatus: string | undefined | null = null;
   private readonly insertEnterBehaviour: InsertEnterBehaviour;
 
   private unnamedRegister: string = "";
@@ -366,10 +375,15 @@ export class ModalEditor extends CustomEditor {
     this.borderSync = opts?.borderSync ?? null;
     this.labelSync = opts?.labelSync ?? null;
     this.labelTransform = opts?.labelTransform ?? null;
+    this.labelPlacement = opts?.labelPlacement ?? DEFAULT_LABEL_PLACEMENT;
     this.insertEnterBehaviour =
       opts?.insertEnterBehaviour ?? DEFAULT_INSERT_ENTER_BEHAVIOUR;
     this.installModeBorderColorizer();
     this.installVisualHighlight();
+  }
+
+  setStatusFn(fn: (label: string | undefined) => void): void {
+    this.statusFn = fn;
   }
 
   setClipboardFn(fn: (text: string, signal?: AbortSignal) => unknown): void {
@@ -4282,11 +4296,17 @@ export class ModalEditor extends CustomEditor {
   render(width: number): string[] {
     const lines = super.render(width);
     this.syncCursorShapeForRender(lines);
-    if (lines.length === 0) return lines;
 
     const rawLabel = fitModeLabel(this.getModeLabel(), width);
     const colorize = this.getModeLabelColorizer();
     const label = colorize ? colorize(rawLabel) : rawLabel;
+
+    if (this.labelPlacement === "footer") {
+      this.publishStatusLabel(label);
+      return lines;
+    }
+    if (lines.length === 0) return lines;
+
     const last = lines.length - 1;
     const lastLine = lines[last];
     if (lastLine && visibleWidth(lastLine) >= visibleWidth(rawLabel)) {
@@ -4303,6 +4323,15 @@ export class ModalEditor extends CustomEditor {
       lines[last] = label;
     }
     return lines;
+  }
+
+  /**
+   * Push the label to pi's footer, but only when it actually changed.
+   */
+  private publishStatusLabel(label: string): void {
+    if (label === this.lastPublishedStatus) return;
+    this.lastPublishedStatus = label;
+    this.statusFn(label);
   }
 
   private getModeLabelColorizer(): ((s: string) => string) | null {
@@ -4394,7 +4423,11 @@ export default function (pi: ExtensionAPI) {
         labelSync,
         offBorderColor,
         labelTransform: reverseVideo,
+        labelPlacement: piVimSettings.labelPlacement,
         insertEnterBehaviour: piVimSettings.insertEnterBehaviour,
+      });
+      editor.setStatusFn((label) => {
+        if (ctx.hasUI) ctx.ui.setStatus("pi-vim", label);
       });
       editor.setClipboardMirrorPolicy(clipboardMirrorPolicy.policy);
       editor.setQuitFn(() => ctx.shutdown());

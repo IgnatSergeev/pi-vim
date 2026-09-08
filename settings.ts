@@ -19,11 +19,17 @@ export type ExCommandSettings = {
 
 export type BorderSyncMode = boolean | "inherit";
 
+// Where the ` NORMAL `/` INSERT ` label is "drawn":
+//   - "editor"     on the editor's bootom border;
+//   - "footer"     published via setStatus.
+export type LabelPlacement = "editor" | "footer";
+
 // What Enter does in insert mode:
 //    - "submit"    submits the prompt;
 //    - "newline"   opens a new line.
 export type InsertEnterBehaviour = "submit" | "newline";
 
+export const DEFAULT_LABEL_PLACEMENT: LabelPlacement = "editor";
 export const DEFAULT_INSERT_ENTER_BEHAVIOUR: InsertEnterBehaviour = "submit";
 
 // Per-surface paint policy for a single mode:
@@ -49,6 +55,7 @@ export type PiVimSettings = {
   borderSync?: SurfaceSyncMap;
   // Per-mode paint policy for pi-vim's footer mode label. Default: "mode".
   labelSync?: SurfaceSyncMap;
+  labelPlacement?: LabelPlacement;
   insertEnterBehaviour?: InsertEnterBehaviour;
   // Deprecated, never-released alias superseded by borderSync/labelSync; still
   // accepted and translated in `resolveSurfaceSyncMaps`. `false`/absent → both
@@ -241,6 +248,12 @@ export function readPiVimBorderSync(
   return surfaceMap(get(g, "borderSync"), BORDER_SYNC_DEFAULT);
 }
 
+export function readPiVimLabelPlacement(g: unknown, p: unknown) {
+  const v = get(p, "labelPlacement");
+  const raw = v === M ? get(g, "labelPlacement") : v;
+  return oneOf(raw, ["editor", "footer"] as const);
+}
+
 export function readPiVimInsertEnterBehaviour(g: unknown, p: unknown) {
   const v = get(p, "insertEnterBehaviour");
   const raw = v === M ? get(g, "insertEnterBehaviour") : v;
@@ -291,6 +304,7 @@ function disk(cwd: string): PiVimSettings {
     globalExCommand: readPiVimGlobalExCommandSetting(g, p),
     modeColors: readPiVimModeColors(g, p),
     modeChange: readPiVimModeChange(g, p),
+    labelPlacement: readPiVimLabelPlacement(g, p),
     insertEnterBehaviour: readPiVimInsertEnterBehaviour(g, p),
     borderSync: readPiVimBorderSync(g, p),
     labelSync: readPiVimLabelSync(g, p),
