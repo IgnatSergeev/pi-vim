@@ -43,6 +43,8 @@ import {
 import {
   cancelModeChangeCommands,
   createModeChangeHandler,
+  emitInitialModeChange,
+  type ModeChangeEvent,
   setModeChangeCommandRunnerForTests,
 } from "./mode-change-command.js";
 import {
@@ -4412,9 +4414,12 @@ export default function (pi: ExtensionAPI) {
     const borderColorizers = t ? buildModeColorizers(t, modeColors) : null;
     // Enables the "thinking" neutral-default detection; unused by "mode"/"host".
     const offBorderColor = t ? buildOffBorderColor(t) : null;
+    const emitModeChange = (event: ModeChangeEvent) => {
+      pi.events.emit("pi-vim:mode-change", event);
+    };
     const modeChangeHandler = createModeChangeHandler(
       piVimSettings.modeChange,
-      (event) => pi.events.emit("pi-vim:mode-change", event),
+      emitModeChange,
     );
     ctx.ui.setEditorComponent((tui, theme, kb) => {
       cursorShapeCleanup = enableCursorShapeSupport(tui);
@@ -4435,6 +4440,7 @@ export default function (pi: ExtensionAPI) {
       editor.setQuitFn(() => ctx.shutdown());
       editor.setNotifyFn((message) => ctx.ui.notify(message, "warning"));
       editor.setModeChangeFn(modeChangeHandler);
+      emitInitialModeChange(editor.getMode(), emitModeChange);
       editor.setExCommandSettings(exCommand.settings);
       // Resolved at submit time so commands registered or reloaded mid-session
       // are dispatchable without restarting.

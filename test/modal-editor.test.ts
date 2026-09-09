@@ -242,6 +242,7 @@ function assertNoCursorShapeSequences(lines: string[]): void {
 type InstalledExtension = {
   editorFactory: EditorFactory;
   eventBusEmissions(): Array<{ event: string; data: unknown }>;
+  onEvent(event: string, handler: (data: unknown) => void): void;
   readonly notificationCalls: number;
   readonly notifications: NotificationCall[];
   readonly shutdownCalls: number;
@@ -310,6 +311,9 @@ async function installExtensionWithEditorFactory(
   return {
     editorFactory,
     eventBusEmissions: () => pi.eventBusEmissions(),
+    onEvent: (event: string, handler: (data: unknown) => void) => {
+      pi.events.on(event, handler);
+    },
     setCommands: (names: readonly string[]) => pi.setCommands(names),
     get notificationCalls() {
       return notificationCalls;
@@ -1067,6 +1071,10 @@ describe("mode change extension hook", () => {
       assert.deepEqual(extension.eventBusEmissions(), [
         {
           event: "pi-vim:mode-change",
+          data: { mode: "insert", previousMode: null },
+        },
+        {
+          event: "pi-vim:mode-change",
           data: { mode: "normal", previousMode: "insert" },
         },
         {
@@ -1077,6 +1085,53 @@ describe("mode change extension hook", () => {
     } finally {
       restoreSettings();
       restoreRunner();
+    }
+  });
+
+  it("announces the editor's initial mode without running commands", async () => {
+    const commands: string[] = [];
+    const restoreRunner = setModeChangeCommandRunnerForTests((command) => {
+      commands.push(command);
+    });
+    const restoreSettings = setPiVimSettingsReaderForTests(() => ({
+      modeChange: { insert: "insert-cmd", normal: "normal-cmd" },
+    }));
+
+    try {
+      const extension = await installExtensionWithEditorFactory();
+      const editor = extension.editorFactory(
+        stubTui,
+        stubTheme,
+        stubKeybindings,
+      );
+
+      assert.deepEqual(extension.eventBusEmissions(), [
+        {
+          event: "pi-vim:mode-change",
+          data: { mode: editor.getMode(), previousMode: null },
+        },
+      ]);
+      assert.deepEqual(commands, []);
+    } finally {
+      restoreSettings();
+      restoreRunner();
+    }
+  });
+
+  it("keeps editor creation alive when an initial-mode subscriber throws", async () => {
+    const restoreSettings = setPiVimSettingsReaderForTests(() => ({}));
+
+    try {
+      const extension = await installExtensionWithEditorFactory();
+      extension.onEvent("pi-vim:mode-change", () => {
+        throw new Error("subscriber blew up");
+      });
+
+      assert.doesNotThrow(() =>
+        extension.editorFactory(stubTui, stubTheme, stubKeybindings),
+      );
+    } finally {
+      restoreSettings();
     }
   });
 
@@ -1154,7 +1209,7 @@ describe("mode change extension hook", () => {
       assert.deepEqual(commands, []);
       assert.deepEqual(
         extension.eventBusEmissions().map((emission) => emission.event),
-        ["pi-vim:mode-change", "pi-vim:mode-change"],
+        ["pi-vim:mode-change", "pi-vim:mode-change", "pi-vim:mode-change"],
       );
     } finally {
       restoreSettings();

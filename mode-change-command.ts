@@ -10,7 +10,8 @@ type RunningModeChangeCommand = {
   child: ReturnType<typeof spawn>;
   timeout: ReturnType<typeof setTimeout>;
 };
-export type ModeChangeEvent = { mode: Mode; previousMode: Mode };
+/** `previousMode` is null only for the initial mode of a freshly created editor. */
+export type ModeChangeEvent = { mode: Mode; previousMode: Mode | null };
 
 let activeModeChangeCommand: RunningModeChangeCommand | null = null;
 let pendingModeChangeCommand: string | null = null;
@@ -94,6 +95,22 @@ export function cancelModeChangeCommands(): void {
     active.child.kill();
   } catch {
     // best effort session cleanup
+  }
+}
+
+/**
+ * Announce the mode an editor starts in, so subscribers that attach after
+ * session start do not have to wait for the first transition. Configured shell
+ * hooks stay out of this on purpose: they run on real transitions only.
+ */
+export function emitInitialModeChange(
+  mode: Mode,
+  emitModeChange: (event: ModeChangeEvent) => void,
+): void {
+  try {
+    emitModeChange({ mode, previousMode: null });
+  } catch {
+    // Subscribers must not break editor creation.
   }
 }
 
