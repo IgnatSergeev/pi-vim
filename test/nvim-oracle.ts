@@ -24,6 +24,8 @@ export type NvimParityCase = {
   name: string;
   initial: NvimParityInitialState;
   keys: string[];
+  leader?: string;
+  keymaps?: Array<{ lhs: string; rhs: string }>;
 };
 
 export type NvimParitySnapshot = {
@@ -80,6 +82,8 @@ const NVIM_DRIVER_LUA = [
   "vim.api.nvim_win_set_cursor(0, { input.cursor.line + 1, input.cursor.col })",
   "if input.mode == 'insert' then vim.cmd('startinsert') else vim.cmd('stopinsert') end",
   "vim.api.nvim_win_set_cursor(0, { input.cursor.line + 1, input.cursor.col })",
+  "if input.leader ~= nil then vim.g.mapleader = vim.api.nvim_replace_termcodes(input.leader, true, false, true) end",
+  "for _, keymap in ipairs(input.keymaps or {}) do vim.keymap.set('n', keymap.lhs, keymap.rhs) end",
   "local keys = table.concat(input.keys, '')",
   "local term = vim.api.nvim_replace_termcodes(keys, true, false, true)",
   "vim.api.nvim_feedkeys(term, 'x', false)",
@@ -186,6 +190,8 @@ export async function runNvimParityCase(
     mode: testCase.initial.mode ?? "normal",
     register: testCase.initial.register ?? "",
     keys: testCase.keys.map(toNvimKey),
+    leader: testCase.leader,
+    keymaps: testCase.keymaps ?? [],
   };
 
   const child = spawn(

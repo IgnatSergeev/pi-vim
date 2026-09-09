@@ -41,6 +41,11 @@ import {
   isPrintableInput,
 } from "./input-keys.js";
 import {
+  KeymapRegistry,
+  type ResolvedKeymapEntry,
+  resolveLeaderTokens,
+} from "./keymap.js";
+import {
   cancelModeChangeCommands,
   createModeChangeHandler,
   emitInitialModeChange,
@@ -287,6 +292,8 @@ export class ModalEditor extends CustomEditor {
   private pendingEscWhileAcceptingBracketedPasteInExCommand: boolean = false;
   private discardingPasteAfterNewlineInExCommand: boolean = false;
   private lastCharMotion: LastCharMotion | null = null;
+  private keymaps: KeymapRegistry | null = null;
+  private pendingKeymapKeys: string[] = [];
   private discardingBracketedPasteInNormalMode: boolean = false;
   private pendingEscWhileDiscardingBracketedPasteInNormalMode: boolean = false;
   private wordBoundaryCache = new WordBoundaryCache();
@@ -424,6 +431,10 @@ export class ModalEditor extends CustomEditor {
   }
   setExCommandSettings(settings: ExCommandSettings): void {
     this.exCommandSettings = settings;
+  }
+  setKeymapRegistry(registry: KeymapRegistry | null): void {
+    this.keymaps = registry;
+    this.pendingKeymapKeys = [];
   }
   getRegister(): string {
     return this.unnamedRegister;
@@ -1180,6 +1191,7 @@ export class ModalEditor extends CustomEditor {
     this.pendingG = false;
     this.pendingGCount = "";
     this.pendingReplace = false;
+    this.pendingKeymapKeys = [];
     this.clearPendingExCommand();
   }
 
@@ -1525,7 +1537,8 @@ export class ModalEditor extends CustomEditor {
       this.operatorCount ||
       this.pendingG ||
       this.pendingGCount ||
-      this.pendingReplace
+      this.pendingReplace ||
+      this.pendingKeymapKeys.length > 0
     ) {
       this.clearPendingState();
       this.cancelRepeatableCommand();
@@ -1671,6 +1684,11 @@ export class ModalEditor extends CustomEditor {
     this.clearPendingExCommand();
     if (!command) return;
 
+    this.executeExCommandLine(command);
+  }
+
+  /** Executes one ex line (already stripped of its leading `:`) */
+  private executeExCommandLine(command: string): void {
     const force = command.endsWith("!");
     const quitName = force ? command.slice(0, -1) : command;
 
@@ -2495,8 +2513,57 @@ export class ModalEditor extends CustomEditor {
     }
   }
 
+  /**
+   * Consumes the key if it corresponds to some registered keymap.
+   * Returns true when the key was consumed.
+   */
+  private handleKeymapKey(data: string): boolean {
+    const keymaps = this.keymaps;
+    if (!keymaps || keymaps.size === 0) return false;
+
+    if (this.pendingKeymapKeys.length === 0) {
+      // Keymaps are normal-mode only, take no count, and never interrupt a
+      // half-typed builtin command.
+      if (isVisualMode(this.mode)) return false;
+      if (this.pendingG || this.prefixCount || this.operatorCount) return false;
+    }
+
+    const keys = [...this.pendingKeymapKeys, data];
+    this.pendingKeymapKeys = [];
+
+    if (this.resolveKeymapKeys(keys)) return true;
+
+    // The sequence is dropped, but the key that ended it may open a
+    // new one on its own — `<leader><leader>g` reaching a `<leader>g` keymap.
+    if (keys.length > 1) {
+      this.resolveKeymapKeys([data]);
+      return true;
+    }
+    return false;
+  }
+
+  /** Executes a completed keymap actions if the key sequence matches any.
+   *   Keeps an unfinished sequence pending if it matches any keymap prefix.
+   *   Does nothing and returns false when the sequence does not match any keymap prefix. */
+  private resolveKeymapKeys(keys: string[]): boolean {
+    const match = this.keymaps?.match(keys);
+    if (match?.kind === "run") {
+      for (const action of match.entry.actions) {
+        this.executeExCommandLine(action.ex);
+      }
+      return true;
+    }
+    if (match?.kind === "pending") {
+      this.pendingKeymapKeys = keys;
+      return true;
+    }
+    return false;
+  }
+
   private handleNormalMode(input: string): void {
     const data = isBackspaceLikeInput(input) ? "h" : input;
+
+    if (this.handleKeymapKey(data)) return;
 
     if (this.pendingG) {
       if (isDigit(data)) {
@@ -4381,6 +4448,41 @@ export class ModalEditor extends CustomEditor {
   }
 }
 
+/** pi-vim keymap API published for other extensions */
+export type PiVimKeymapApi = {
+  set(lhs: string, rhs: string, description?: string): boolean;
+  del(lhs: string): boolean;
+  list(): ResolvedKeymapEntry[];
+};
+
+export type PiVimApi = {
+  version: 1;
+  leader: string;
+  keymap: PiVimKeymapApi;
+};
+
+/** Channel pi-vim publishes {@link PiVimApi} on. */
+export const PI_VIM_API_EVENT = "pi-vim:api";
+
+/** Channel an extension emits to request for api republish.
+ *
+ *   Single api emit would be missed by extensions that start listening after the pi-vim session_start publish
+ *   (ones that are listening on lazy events).
+ *
+ *   For that reason channel flow is following:
+ *   - Extension starts listening before pi-vim published in session_start
+ *     1. extension creation: pi.events.on("pi-vim:api", ...)
+ *     2. pi-vim session_start: pi.events.emit("pi-vim:api", ...)
+ *     3. extension executes pi-vim:api callback
+ *   - Extension starts listening after pi-vim published in session_start
+ *     1. pi-vim session_start: pi.events.on("pi-vim:api:request", ...)
+ *     2. extension lazy listen (for example on specific cmd or runtime condition): pi.events.on("pi-vim:api", ...)
+ *     3. extension lazy request: pi.events.emit("pi-vim:api:request", ...)
+ *     4. pi-vim executess pi-vim:api:request callback: pi.events.emit("pi-vim:api", ...)
+ *     5. extension executes pi-vim:api callback
+ * */
+export const PI_VIM_API_REQUEST_EVENT = "pi-vim:api:request";
+
 export default function (pi: ExtensionAPI) {
   let cursorShapeCleanup: CursorShapeCleanup | null = null;
 
@@ -4399,6 +4501,63 @@ export default function (pi: ExtensionAPI) {
     if (exCommand.warning && ctx.hasUI) {
       ctx.ui.notify(exCommand.warning, "warning");
     }
+
+    const notifyWarning = (message: string) => {
+      if (ctx.hasUI) ctx.ui.notify(message, "warning");
+    };
+
+    const leader = resolveLeaderTokens(piVimSettings.leader);
+    if (leader.warning) notifyWarning(leader.warning);
+
+    const keymaps = new KeymapRegistry(leader.tokens);
+
+    const piVimApi: PiVimApi = {
+      version: 1,
+      leader: leader.notation,
+      keymap: {
+        set: (keys, cmds, description) => {
+          if (typeof keys !== "string" || !keys) {
+            notifyWarning(
+              `pi-vim keymap.set "${keys}": keys sequence must be a non-empty string`,
+            );
+            return false;
+          }
+          if (typeof cmds !== "string") {
+            notifyWarning(
+              `pi-vim keymap.set "${keys}": commands sequence must be a string`,
+            );
+            return false;
+          }
+          if (description !== undefined && typeof description !== "string") {
+            notifyWarning(
+              `pi-vim keymap.set "${keys}": description must be a string`,
+            );
+            return false;
+          }
+          const rejected = keymaps.set(keys, cmds, description ?? "");
+          if (rejected) {
+            notifyWarning(`pi-vim keymap.set "${keys}": ${rejected}`);
+            return false;
+          }
+          return true;
+        },
+        del: (keys) => {
+          if (typeof keys !== "string" || !keys) {
+            notifyWarning(
+              `pi-vim keymap.del "${keys}": keys sequence must be a non-empty string`,
+            );
+            return false;
+          }
+          return keymaps.del(keys);
+        },
+        list: () => keymaps.list(),
+      },
+    };
+
+    pi.events.on(PI_VIM_API_REQUEST_EVENT, () => {
+      pi.events.emit(PI_VIM_API_EVENT, piVimApi);
+    });
+    pi.events.emit(PI_VIM_API_EVENT, piVimApi);
 
     const t = ctx.ui.theme;
     const modeColors = resolveModeColors(piVimSettings.modeColors);
@@ -4442,6 +4601,7 @@ export default function (pi: ExtensionAPI) {
       editor.setModeChangeFn(modeChangeHandler);
       emitInitialModeChange(editor.getMode(), emitModeChange);
       editor.setExCommandSettings(exCommand.settings);
+      editor.setKeymapRegistry(keymaps);
       // Resolved at submit time so commands registered or reloaded mid-session
       // are dispatchable without restarting.
       editor.setCommandNamesFn(

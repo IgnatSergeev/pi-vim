@@ -8,6 +8,7 @@ import {
   readPiVimClipboardMirrorSetting,
   readPiVimExCommandSetting,
   readPiVimGlobalExCommandSetting,
+  readPiVimGlobalLeaderSetting,
   readPiVimLabelSync,
   readPiVimModeChange,
   readPiVimModeColors,
@@ -677,5 +678,28 @@ describe("piVim exCommand settings resolver", () => {
       resolved.warning,
       "Invalid piVim.exCommand copyInputToClipboard; expected a boolean.",
     );
+  });
+});
+
+describe("piVim leader setting reader", () => {
+  it("reads the leader from global settings", () => {
+    assert.equal(
+      readPiVimGlobalLeaderSetting({ piVim: { leader: "<Space>" } }, {}),
+      "<Space>",
+    );
+  });
+
+  it("ignores project settings", () => {
+    // The leader is what every installed extension's keymaps hang off, so a
+    // checked-in project file must not be able to move it.
+    assert.equal(
+      readPiVimGlobalLeaderSetting({}, { piVim: { leader: "\\" } }),
+      undefined,
+    );
+  });
+
+  it("returns undefined when the key is absent", () => {
+    assert.equal(readPiVimGlobalLeaderSetting({ piVim: {} }, {}), undefined);
+    assert.equal(readPiVimGlobalLeaderSetting(undefined, undefined), undefined);
   });
 });

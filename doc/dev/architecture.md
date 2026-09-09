@@ -42,6 +42,7 @@ flowchart TD
     subgraph shared["shared vocabulary"]
         types["types.ts — Mode / motion / operator types + key maps"]
         settings["settings.ts — read + shape piVim settings"]
+        keymap["keymap.ts — keys notation + keymap table"]
     end
 
     index --> motions
@@ -57,6 +58,7 @@ flowchart TD
     index --> modechange
     index --> types
     index --> settings
+    index --> keymap
 
     motions --> types
     wbcache --> motions
@@ -67,6 +69,7 @@ flowchart TD
     modecolors --> settings
     modechange --> settings
     modechange --> types
+    keymap --> motions
 ```
 
 Every arrow is a direct `import`. The graph is acyclic and one-directional:
@@ -79,9 +82,10 @@ changing behavior.
 
 | module | owns | pure? |
 | --- | --- | --- |
-| `index.ts` | modal state machine, key dispatch, operators, undo/redo, dot-repeat, visual selection anchor, put/register, render composition, EX mini-mode and the pi-command bridge, session hooks | no (all mutable state) |
+| `index.ts` | modal state machine, key dispatch, operators, undo/redo, dot-repeat, visual selection anchor, put/register, render composition, EX mini-mode and the pi-command bridge, the `pi-vim:api` keymap API, session hooks | no (all mutable state) |
 | `types.ts` | `Mode`, `CharMotion`, `PendingMotion`, `PendingOperator`, `LastCharMotion`, `NORMAL_KEYS` | n/a (types + constants) |
 | `settings.ts` | `PiVimSettings` shape + `readPiVimSettings` + the `exCommand` resolver | reads settings |
+| `keymap.ts` | key-notation parsing, `KeymapRegistry` | stateful registry, no editor state |
 | `motions.ts` | char-find / word / paragraph motion targets, grapheme splitting | yes |
 | `text-objects.ts` | word / delimited / matching-pair range resolution | yes |
 | `word-boundary-cache.ts` | line-keyed cache of word-motion boundaries | stateful cache, no editor state |
@@ -194,7 +198,13 @@ flowchart TD
     vis -- yes --> doVis["handleVisualMode<br/>consumes v V o d x y c s D X Y C S<br/>and the inert keys"]
     doVis -- "not consumed<br/>(motions, counts)" --> normal
     vis -- no --> normal["handleNormalMode"]
+    normal --> km{"keymap sequence?"}
+    km -- "run / keep waiting" --> dokm["handleKeymapKey<br/>runs the mapped ex lines"]
+    km -- no --> dispatch["g-prefix, counts, normal keys"]
 ```
+
+`handleKeymapKey` runs first inside `handleNormalMode`, but only claims a
+key when the registry has an entry starting with it. In case the pending keymap sequence is broken (unmapped key met), it is dropped rather than replayed.
 
 `handleVisualMode` returns a boolean rather than owning the whole key
 space: motions and counts deliberately fall through to `handleNormalMode`,

@@ -19,8 +19,10 @@ import {
 } from "../clipboard-mirror.js";
 import installPiVim, {
   ModalEditor,
+  type PiVimApi,
   setModeChangeCommandRunnerForTests,
 } from "../index.js";
+import { KeymapRegistry, resolveLeaderTokens } from "../keymap.js";
 import type { WordMotionClass } from "../motions.js";
 import {
   type PiVimSettings,
@@ -243,6 +245,7 @@ type InstalledExtension = {
   editorFactory: EditorFactory;
   eventBusEmissions(): Array<{ event: string; data: unknown }>;
   onEvent(event: string, handler: (data: unknown) => void): void;
+  emitEvent(event: string, data: unknown): void;
   readonly notificationCalls: number;
   readonly notifications: NotificationCall[];
   readonly shutdownCalls: number;
@@ -313,6 +316,9 @@ async function installExtensionWithEditorFactory(
     eventBusEmissions: () => pi.eventBusEmissions(),
     onEvent: (event: string, handler: (data: unknown) => void) => {
       pi.events.on(event, handler);
+    },
+    emitEvent: (event: string, data: unknown) => {
+      pi.events.emit(event, data);
     },
     setCommands: (names: readonly string[]) => pi.setCommands(names),
     get notificationCalls() {
@@ -1048,6 +1054,13 @@ describe("mode change callback", () => {
 });
 
 describe("mode change extension hook", () => {
+  // pi-vim publishes its extension API on the same bus, so mode-change
+  // assertions filter to their own channel.
+  const modeChangeEmissions = (extension: InstalledExtension) =>
+    extension
+      .eventBusEmissions()
+      .filter((emission) => emission.event === "pi-vim:mode-change");
+
   it("emits mode-change events and runs configured commands", async () => {
     const commands: string[] = [];
     const restoreRunner = setModeChangeCommandRunnerForTests((command) => {
@@ -1068,7 +1081,7 @@ describe("mode change extension hook", () => {
       sendKeys(editor, ["\x1b", ":", "\x1b", "i"]);
 
       assert.deepEqual(commands, ["normal-cmd", "insert-cmd"]);
-      assert.deepEqual(extension.eventBusEmissions(), [
+      assert.deepEqual(modeChangeEmissions(extension), [
         {
           event: "pi-vim:mode-change",
           data: { mode: "insert", previousMode: null },
@@ -1105,7 +1118,7 @@ describe("mode change extension hook", () => {
         stubKeybindings,
       );
 
-      assert.deepEqual(extension.eventBusEmissions(), [
+      assert.deepEqual(modeChangeEmissions(extension), [
         {
           event: "pi-vim:mode-change",
           data: { mode: editor.getMode(), previousMode: null },
@@ -1208,7 +1221,7 @@ describe("mode change extension hook", () => {
 
       assert.deepEqual(commands, []);
       assert.deepEqual(
-        extension.eventBusEmissions().map((emission) => emission.event),
+        modeChangeEmissions(extension).map((emission) => emission.event),
         ["pi-vim:mode-change", "pi-vim:mode-change", "pi-vim:mode-change"],
       );
     } finally {
@@ -9861,5 +9874,513 @@ describe("visual mode — undo", () => {
     assert.equal(editor.getText(), "\ndef");
     sendKeys(editor, ["u"]);
     assert.equal(editor.getText(), "abc\ndef");
+  });
+});
+
+describe("normal-mode keymaps", () => {
+  type KeymapSession = ReturnType<typeof createEditorWithSpy> & {
+    dispatched: string[];
+    warnings: string[];
+    keymaps: KeymapRegistry;
+  };
+
+  function createKeymapSession(
+    initialText: string,
+    entries: Array<[string, string, string?]> = [
+      ["<leader>g", ":lazygit<CR>", "Open lazygit"],
+    ],
+    options: { leader?: string; knownCommands?: readonly string[] } = {},
+  ): KeymapSession {
+    const session = createEditorWithSpy(initialText);
+    const dispatched: string[] = [];
+    const warnings: string[] = [];
+    const keymaps = new KeymapRegistry(
+      resolveLeaderTokens(options.leader).tokens,
+    );
+    for (const [lhs, rhs, description] of entries) {
+      keymaps.set(lhs, rhs, description);
+    }
+
+    session.editor.setKeymapRegistry(keymaps);
+    session.editor.setCommandNamesFn(
+      () => new Set(options.knownCommands ?? ["lazygit", "tree"]),
+    );
+    session.editor.setRunCommandFn((commandLine) => {
+      dispatched.push(commandLine);
+      // Every real dispatch route clears the prompt before running.
+      session.editor.setText("");
+    });
+    // Object.assign, not a spread: `quitCalls` is a getter on the session.
+    return Object.assign(session, { dispatched, warnings, keymaps });
+  }
+
+  it("runs the mapped command on <leader>g", () => {
+    const session = createKeymapSession("");
+
+    sendKeys(session.editor, [" ", "g"]);
+
+    assert.deepEqual(session.dispatched, ["/lazygit"]);
+    assert.deepEqual(session.notifications, []);
+    assert.equal(session.editor.getMode(), "normal");
+  });
+
+  it("runs several commands in the order they were written", () => {
+    const session = createKeymapSession("", [
+      ["<leader>x", ":tree<CR><cmd>lazygit<CR>"],
+    ]);
+
+    sendKeys(session.editor, [" ", "x"]);
+
+    assert.deepEqual(session.dispatched, ["/tree", "/lazygit"]);
+  });
+
+  it("passes command arguments through", () => {
+    const session = createKeymapSession(
+      "",
+      [["<leader>m", ":model opus<CR>"]],
+      { knownCommands: ["model"] },
+    );
+
+    sendKeys(session.editor, [" ", "m"]);
+
+    assert.deepEqual(session.dispatched, ["/model opus"]);
+  });
+
+  it("waits for the rest of a multi-key sequence", () => {
+    const session = createKeymapSession("", [["<leader>gs", ":tree<CR>"]]);
+
+    sendKeys(session.editor, [" ", "g"]);
+    assert.deepEqual(session.dispatched, []);
+
+    sendKeys(session.editor, ["s"]);
+    assert.deepEqual(session.dispatched, ["/tree"]);
+  });
+
+  it("matches modifier keys inside a sequence", () => {
+    const session = createKeymapSession("", [
+      ["<leader><C-g>", ":lazygit<CR>"],
+    ]);
+
+    sendKeys(session.editor, [" ", "\x07"]);
+
+    assert.deepEqual(session.dispatched, ["/lazygit"]);
+  });
+
+  it("shows no pending indicator while a sequence is unfinished", () => {
+    const session = createKeymapSession("hello", [["<leader>gs", ":tree<CR>"]]);
+
+    sendKeys(session.editor, [" ", "g"]);
+
+    assert.ok(session.editor.render(80).at(-1)?.endsWith(" NORMAL "));
+  });
+
+  it("drops an unmapped sequence without running its keys", () => {
+    const session = createKeymapSession("hello");
+
+    sendKeys(session.editor, [" ", "x"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.deepEqual(session.notifications, []);
+    assert.equal(session.editor.getText(), "hello");
+
+    sendKeys(session.editor, ["x"]);
+    assert.equal(session.editor.getText(), "ello");
+  });
+
+  it("restarts a sequence when the unmapped key can open one", () => {
+    const session = createKeymapSession("hello");
+
+    // <leader><leader>g: the second leader ends a dead sequence and opens a
+    // fresh one, so the keymap still fires.
+    sendKeys(session.editor, [" ", " ", "g"]);
+
+    assert.deepEqual(session.dispatched, ["/lazygit"]);
+    assert.equal(session.editor.getText(), "hello");
+  });
+
+  it("leaves the leader alone when no keymap is registered", () => {
+    const session = createKeymapSession("hello", []);
+
+    sendKeys(session.editor, [" ", "x"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), "ello");
+    assert.deepEqual(session.editor.getCursor(), { line: 0, col: 0 });
+  });
+
+  it("escape cancels a pending sequence", () => {
+    const session = createKeymapSession("hello", [["<leader>gs", ":tree<CR>"]]);
+
+    sendKeys(session.editor, [" ", "g", "\x1b", "s"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getMode(), "insert");
+    assert.equal(session.editor.getText(), "ello");
+
+    sendKeys(session.editor, ["\x1b", " ", "g", "s"]);
+    assert.deepEqual(session.dispatched, ["/tree"]);
+  });
+
+  it("does not fire in insert mode", () => {
+    const session = createKeymapSession("");
+
+    sendKeys(session.editor, ["i", " ", "g"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), " g");
+  });
+
+  it("does not fire in visual mode", () => {
+    const session = createKeymapSession("hello");
+
+    sendKeys(session.editor, ["v", " ", "g"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getMode(), "visual");
+    assert.equal(session.editor.getText(), "hello");
+  });
+
+  it("does not interrupt a pending count", () => {
+    const session = createKeymapSession("hello world");
+
+    sendKeys(session.editor, ["2", " ", "g"]);
+
+    // The count swallows the leader as an unsupported counted command, and the
+    // trailing `g` opens the builtin `g` prefix instead of finishing a keymap.
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), "hello world");
+    assert.deepEqual(session.editor.getCursor(), { line: 0, col: 0 });
+  });
+
+  it("does not interrupt a pending operator", () => {
+    const session = createKeymapSession("hello world");
+
+    sendKeys(session.editor, ["d", " ", "g"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), "hello world");
+  });
+
+  it("does not shadow the keys a keymap ends with", () => {
+    const { editor } = createMultiLineEditor("abc\ndef");
+    const keymaps = new KeymapRegistry(resolveLeaderTokens(undefined).tokens);
+    keymaps.set("<leader>g", ":lazygit<CR>");
+    editor.setKeymapRegistry(keymaps);
+
+    sendKeys(editor, ["G", "g", "g"]);
+
+    assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
+  });
+
+  it("uses the configured leader", () => {
+    const session = createKeymapSession("hello", undefined, {
+      leader: "<Bslash>",
+    });
+
+    sendKeys(session.editor, ["\\", "g"]);
+
+    assert.deepEqual(session.dispatched, ["/lazygit"]);
+  });
+
+  it("leaves the default leader inert when another leader is configured", () => {
+    const session = createKeymapSession(
+      "hello",
+      [["<leader>x", ":lazygit<CR>"]],
+      { leader: "<Bslash>" },
+    );
+
+    sendKeys(session.editor, [" ", "x"]);
+
+    // Space is not the leader here, so it stays a no-op and `x` deletes.
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), "ello");
+  });
+
+  it("resolves a quit keymap through the ex quit policy", () => {
+    const session = createKeymapSession("hello", [
+      ["<leader>q", ":q<CR>"],
+      ["<leader>Q", ":q!<CR>"],
+    ]);
+
+    sendKeys(session.editor, [" ", "q"]);
+    assert.equal(session.quitCalls, 0);
+    assert.deepEqual(session.notifications, [
+      "Prompt is not empty; use :q! to quit anyway",
+    ]);
+
+    sendKeys(session.editor, [" ", "Q"]);
+    assert.equal(session.quitCalls, 1);
+  });
+
+  it("warns for a reserved or unknown mapped command", () => {
+    const session = createKeymapSession("", [
+      ["<leader>s", ":s<CR>"],
+      ["<leader>u", ":nope<CR>"],
+    ]);
+
+    sendKeys(session.editor, [" ", "s", " ", "u"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.deepEqual(session.notifications, [
+      "Reserved ex command: :s",
+      "Unsupported ex command: :nope",
+    ]);
+  });
+
+  it("obeys the piDispatch switch", () => {
+    const session = createKeymapSession("");
+    session.editor.setExCommandSettings({
+      piDispatch: false,
+      copyInputToClipboard: false,
+    });
+
+    sendKeys(session.editor, [" ", "g"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.deepEqual(session.notifications, [
+      "Unsupported ex command: :lazygit",
+    ]);
+  });
+
+  it("leaves prompt, cursor, undo and dot-repeat untouched", () => {
+    const session = createKeymapSession("hello");
+    sendKeys(session.editor, ["l", "x"]);
+    assert.equal(session.editor.getText(), "hllo");
+
+    sendKeys(session.editor, [" ", "g"]);
+
+    assert.deepEqual(session.dispatched, ["/lazygit"]);
+    assert.equal(session.editor.getText(), "hllo");
+    assert.deepEqual(session.editor.getCursor(), { line: 0, col: 1 });
+
+    sendKeys(session.editor, ["."]);
+    assert.equal(session.editor.getText(), "hlo");
+    sendKeys(session.editor, ["u", "u"]);
+    assert.equal(session.editor.getText(), "hello");
+  });
+
+  it("picks up a keymap registered after the editor was built", () => {
+    const session = createKeymapSession("hello", []);
+
+    sendKeys(session.editor, [" ", "g", "\x1b"]);
+    assert.deepEqual(session.dispatched, []);
+
+    session.keymaps.set("<leader>g", ":lazygit<CR>");
+    sendKeys(session.editor, [" ", "g"]);
+
+    assert.deepEqual(session.dispatched, ["/lazygit"]);
+  });
+
+  it("stops firing after the keymap is deleted", () => {
+    const session = createKeymapSession("hello");
+
+    session.keymaps.del("<leader>g");
+    sendKeys(session.editor, [" ", "g"]);
+
+    assert.deepEqual(session.dispatched, []);
+  });
+});
+
+describe("pi-vim extension keymap API", () => {
+  async function installWithApi(settings: PiVimSettings = {}): Promise<{
+    extension: Awaited<ReturnType<typeof installExtensionWithEditorFactory>>;
+    api: PiVimApi;
+    restore: () => void;
+  }> {
+    const restore = setPiVimSettingsReaderForTests(() => settings);
+    const extension = await installExtensionWithEditorFactory();
+    const published = extension
+      .eventBusEmissions()
+      .filter((emission) => emission.event === "pi-vim:api");
+    const api = published.at(-1)?.data as PiVimApi;
+    return { extension, api, restore };
+  }
+
+  it("publishes the keymap API on session start", async () => {
+    const { api, restore } = await installWithApi();
+
+    try {
+      assert.equal(api.version, 1);
+      assert.equal(api.leader, "<Space>");
+      assert.equal(typeof api.keymap.set, "function");
+      assert.equal(typeof api.keymap.del, "function");
+      assert.deepEqual(api.keymap.list(), []);
+    } finally {
+      restore();
+    }
+  });
+
+  it("republishes for a subscriber that attached late", async () => {
+    const { extension, restore } = await installWithApi();
+
+    try {
+      const late: PiVimApi[] = [];
+      extension.onEvent("pi-vim:api", (data) => late.push(data as PiVimApi));
+      extension.emitEvent("pi-vim:api:request", null);
+
+      assert.equal(late.length, 1);
+      assert.equal(late[0]?.version, 1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not warn when a republish re-registers the same keymap", async () => {
+    const { extension, api, restore } = await installWithApi();
+
+    try {
+      // A consumer registers from its api callback, so a republish runs it
+      // again; that must be silent.
+      extension.onEvent("pi-vim:api", (data) => {
+        (data as PiVimApi).keymap.set(
+          "<leader>g",
+          ":lazygit<CR>",
+          "Open lazygit",
+        );
+      });
+      extension.emitEvent("pi-vim:api:request", null);
+      extension.emitEvent("pi-vim:api:request", null);
+
+      assert.equal(api.keymap.list().length, 1);
+      assert.deepEqual(extension.notifications, []);
+    } finally {
+      restore();
+    }
+  });
+
+  it("runs a keymap registered through the API", async () => {
+    const { extension, api, restore } = await installWithApi();
+
+    try {
+      extension.setCommands(["lazygit"]);
+      assert.equal(
+        api.keymap.set("<leader>g", ":lazygit<CR>", "Open lazygit"),
+        true,
+      );
+
+      const editor = extension.editorFactory(
+        stubTui,
+        stubTheme,
+        stubKeybindings,
+      );
+      const dispatched: string[] = [];
+      editor.setRunCommandFn((commandLine) => {
+        dispatched.push(commandLine);
+      });
+
+      sendKeys(editor, ["\x1b", " ", "g"]);
+
+      assert.deepEqual(dispatched, ["/lazygit"]);
+      assert.deepEqual(api.keymap.list(), [
+        {
+          lhs: "<leader>g",
+          rhs: ":lazygit<CR>",
+          description: "Open lazygit",
+          keys: ["<Space>", "g"],
+          commands: ["lazygit"],
+        },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("reports a rejected keymap as a warning notification", async () => {
+    const { extension, api, restore } = await installWithApi();
+
+    try {
+      assert.equal(api.keymap.set("dd", ":tree<CR>"), false);
+
+      assert.deepEqual(extension.notifications, [
+        {
+          message:
+            'pi-vim keymap.set "dd": d cannot start a keymap: normal mode uses it',
+          type: "warning",
+        },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("accepts a keymap registered without a description", async () => {
+    const { extension, api, restore } = await installWithApi();
+
+    try {
+      assert.equal(api.keymap.set("<leader>g", ":lazygit<CR>"), true);
+
+      assert.equal(api.keymap.list()[0]?.description, "");
+      assert.deepEqual(extension.notifications, []);
+    } finally {
+      restore();
+    }
+  });
+
+  it("rejects non-string arguments at the API boundary", async () => {
+    const { extension, api, restore } = await installWithApi();
+
+    try {
+      const set = api.keymap.set as (...args: unknown[]) => boolean;
+      assert.equal(set(42, ":tree<CR>"), false);
+      assert.equal(set("", ":tree<CR>"), false);
+      assert.equal(set("<leader>g", 42), false);
+      assert.equal(set("<leader>g", ":tree<CR>", 42), false);
+
+      assert.equal(api.keymap.list().length, 0);
+      assert.deepEqual(
+        extension.notifications.map((call) => call.message),
+        [
+          'pi-vim keymap.set "42": keys sequence must be a non-empty string',
+          'pi-vim keymap.set "": keys sequence must be a non-empty string',
+          'pi-vim keymap.set "<leader>g": commands sequence must be a string',
+          'pi-vim keymap.set "<leader>g": description must be a string',
+        ],
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("reports an invalid leader and falls back to space", async () => {
+    const { extension, api, restore } = await installWithApi({ leader: "d" });
+
+    try {
+      assert.equal(api.leader, "<Space>");
+      assert.deepEqual(extension.notifications, [
+        {
+          message:
+            "Invalid piVim.leader: d cannot start a keymap: normal mode uses it.",
+          type: "warning",
+        },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("shares one registry across editors rebuilt by the factory", async () => {
+    const { extension, api, restore } = await installWithApi();
+
+    try {
+      extension.setCommands(["lazygit"]);
+      api.keymap.set("<leader>g", ":lazygit<CR>");
+      extension.editorFactory(stubTui, stubTheme, stubKeybindings);
+
+      const second = extension.editorFactory(
+        stubTui,
+        stubTheme,
+        stubKeybindings,
+      );
+      const dispatched: string[] = [];
+      second.setRunCommandFn((commandLine) => {
+        dispatched.push(commandLine);
+      });
+
+      sendKeys(second, ["\x1b", " ", "g"]);
+
+      assert.deepEqual(dispatched, ["/lazygit"]);
+    } finally {
+      restore();
+    }
   });
 });

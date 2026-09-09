@@ -51,6 +51,8 @@ export type PiVimSettings = {
   globalExCommand?: unknown;
   modeColors?: ModeColorSettings;
   modeChange?: ModeChangeSettings;
+  // Keymaps `<leader>` notation string representation. Default: "<Space>".
+  leader?: unknown;
   // Per-mode paint policy for Pi's input border. Default: every mode "host".
   borderSync?: SurfaceSyncMap;
   // Per-mode paint policy for pi-vim's footer mode label. Default: "mode".
@@ -225,6 +227,12 @@ export function readPiVimModeChange(g: unknown, p: unknown) {
   return modeChange(v);
 }
 
+export function readPiVimGlobalLeaderSetting(g: unknown, p: unknown) {
+  void p;
+  const v = get(g, "leader");
+  return v === M ? undefined : v;
+}
+
 export function readPiVimBorderSyncSetting(
   g: unknown,
   p: unknown,
@@ -304,6 +312,7 @@ function disk(cwd: string): PiVimSettings {
     globalExCommand: readPiVimGlobalExCommandSetting(g, p),
     modeColors: readPiVimModeColors(g, p),
     modeChange: readPiVimModeChange(g, p),
+    leader: readPiVimGlobalLeaderSetting(g, p),
     labelPlacement: readPiVimLabelPlacement(g, p),
     insertEnterBehaviour: readPiVimInsertEnterBehaviour(g, p),
     borderSync: readPiVimBorderSync(g, p),

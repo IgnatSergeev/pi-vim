@@ -22,7 +22,7 @@ Hit `Esc` and the prompt is a modal editor: INSERT, NORMAL, VISUAL, and V-LINE. 
 
 ### an ex line that talks to Pi
 
-`:tree` runs Pi's `/tree` without leaving your half-written prompt; `:model opus` switches models; every builtin, extension, skill, and prompt command dispatches the same way. A leading `!` reaches Pi's shell — `:!ls` runs `ls`, `:!!cmd` keeps it out of context. The draft is snapshotted before every dispatch and restored after, so a command never eats your prompt.
+`:tree` runs Pi's `/tree` without leaving your half-written prompt; `:model opus` switches models; every builtin, extension, skill, and prompt command dispatches the same way. A leading `!` reaches Pi's shell — `:!ls` runs `ls`, `:!!cmd` keeps it out of context. The draft is snapshotted before every dispatch and restored after, so a command never eats your prompt. Other extensions can put those same commands behind a normal-mode keymap through the [keymap API](#keymap-api).
 
 <!-- gif slot (recording pending): half-written draft, :!ls, shell output appears, draft intact -->
 
@@ -136,6 +136,10 @@ Names match exactly and case-sensitively: `:tree` works, `:tre` and `:tree!` do 
 Dispatch clears Pi's prompt buffer, so pi-vim snapshots the composed prompt before the command runs and restores it after; no command reads that buffer as an argument, so the restore is always safe. A dispatch is transparent: the prompt text, the cursor position, undo, redo, and the `.` repeat all survive it untouched. Pi's builtin and extension routes both clear the buffer synchronously before their first `await`, which the restore beats. Set `piVim.exCommand.copyInputToClipboard` to `true` if you want the prompt copied to the OS clipboard before each dispatch as a belt-and-braces fallback, or `piVim.exCommand.piDispatch` to `false` to switch the bridge off entirely.
 
 Discoverability is Pi's `/` palette; ex-line completion of command names is not implemented.
+
+##### keymaps
+
+Other extensions bind normal-mode key sequences to those ex lines through pi-vim's keymap API. See [keymap API](#keymap-api) for the full contract.
 
 ---
 
@@ -351,7 +355,7 @@ Visual-mode edits are deliberately **not** dot-repeatable: running one clears th
 
 ## settings reference
 
-Settings are read from `~/.pi/agent/settings.json` and project `.pi/settings.json`. All keys are optional; omitting `piVim` is equivalent to the defaults. Project settings override global for `clipboardMirror`, `exCommand.piDispatch`, `modeColors`, `borderSync`, `labelSync`, `labelPlacement`, and `insertEnterBehaviour` (object values are replaced as a whole, missing modes defaulting below); `modeChange` and `exCommand.copyInputToClipboard` are user-global only — `modeChange` because it executes shell commands.
+Settings are read from `~/.pi/agent/settings.json` and project `.pi/settings.json`. All keys are optional; omitting `piVim` is equivalent to the defaults. Project settings override global for `clipboardMirror`, `exCommand.piDispatch`, `modeColors`, `borderSync`, `labelSync`, `labelPlacement`, and `insertEnterBehaviour` (object values are replaced as a whole, missing modes defaulting below); `modeChange`, `leader`, and `exCommand.copyInputToClipboard` are user-global only — `modeChange` because it executes shell commands.
 
 Default-equivalent `settings.json`:
 
@@ -382,10 +386,17 @@ Default-equivalent `settings.json`:
       "ex": "mode"
     },
     "labelPlacement": "editor",
-    "insertEnterBehaviour": "submit"
+    "insertEnterBehaviour": "submit",
+    "leader": "<Space>"
   }
 }
 ```
+
+### leader
+
+`leader`: the keys `<leader>` notation expands to in a keymap, written as a literal key or in nvim key notation — `"<Space>"` (the default), `"<Bslash>"`, `"\\"`. It must be a key normal mode does not own; anything else is reported as a warning and falls back to space. Read from the user-global settings file only.
+
+Keymaps themselves are not configured here — extensions register them (see [keymap API](#keymap-api)).
 
 ### clipboardMirror
 
@@ -503,6 +514,7 @@ pi-vim does not bundle any such tool and does not care which one you use — any
 | `%` matching | `()`, `[]`, `{}` only; lexical same-delimiter matching with no counts, quote/angle matching, parser/matchit logic, or mixed-delimiter validation | Also supports percentage jumps and broader matching |
 | Count prefix | Operators, motions, navigation, `x`, `r`, `p`, `P`; capped at `MAX_COUNT=9999` | Full support |
 | Named registers / macros / search | Not implemented; the unnamed register is supported | Supported |
+| Key mappings | Normal-mode only; a sequence must not start with a key normal mode owns, takes no count, and runs ex lines only. An unfinished or unmapped sequence is dropped | `:map` family for every mode, arbitrary right-hand sides, `timeoutlen` replay, remapping any key |
 | Ex commands | EX mini-mode quits (`:q`, `:qa`, `:quit`, `:qall`, `:quitall`, and their `!` forms), dispatches non-conflicting Pi slash commands (`:tree`, `:model opus`), and runs shell commands via `:!cmd`; vim ex semantics are reserved, not implemented | Full ex command-line surface |
 | Multi-line operators | `d/c/y` with `w/e/b`, `W/E/B`, `j/k`, and `G`; not the full Vim motion matrix | Rich cross-line semantics |
 
@@ -516,6 +528,71 @@ Also out of scope (not already covered by a row above):
 - Replace mode (`R`) — only `r{char}` is supported
 - Insert-mode `<C-r>` register expansion; cross-session redo persistence
 - Window / tab / buffer management, plugin ecosystem compatibility
+
+---
+
+## keymap API
+
+pi-vim publishes an API object on Pi's event bus so **other extensions** can bind normal-mode key sequences to Pi commands. It is modelled on nvim's `vim.keymap.set`, minus the mode argument.
+
+```ts
+export default function (pi: ExtensionAPI) {
+  pi.events.on("pi-vim:api", (piVim) => {
+    piVim.keymap.set("<leader>g", ":lazygit<CR>", "Open lazygit");
+  });
+  pi.registerCommand("lazygit", ...)
+}
+```
+
+The published object is:
+
+```ts
+type PiVimApi = {
+  version: 1;
+  leader: string;
+  keymap: {
+    set(lhs: string, rhs: string, description?: string): boolean;
+    del(lhs: string): boolean;
+    list(): ResolvedKeymapEntry[];
+  };
+};
+```
+
+### left-hand side
+
+Keys are written in [nvim key notation](https://neovim.io/doc/user/intro.html#key-notation): `<leader>`, `<Space>`, `<CR>`, `<Esc>`, `<Tab>`, `<BS>`, `<Del>`, `<lt>`, `<Bslash>`, `<Bar>`, `<Up>`/`<Down>`/`<Left>`/`<Right>`, `<Home>`/`<End>`/`<PageUp>`/`<PageDown>`, `<F1>`–`<F12>`, and the modifier forms `<C-x>`, `<M-x>`/`<A-x>`, `<S-x>`, `<D-x>` including combinations such as `<C-S-x>`. Names are case-insensitive, and anything else is a literal key.
+
+Keymaps limitation rule is ensured, because pi-vim has no `timeoutlen` and never replays a pending sequence as builtin commands:
+
+- **The first key must be one normal mode does not own.** Rejected are every key normal mode dispatches today and every key vim's normal mode defines that pi-vim has not implemented yet — `0`–`9`, `hjkl$^_wbeWBE{}%`, `fFtT;,`, `ixXDCSsaAIoO`, `dcyJpPYrvV`, `gG:u.`, `/?nN`, `mq@zZ`, `` "'` ``, `[]()`, `HML`, `RUKQ`, `~<>=|`, `&*#+-!` — plus every non-printable key (`<CR>`, `<Esc>`, `<Tab>`, arrows, `<C-…>`), because those reach Pi's own editor bindings. In practice that leaves `<Space>` and `<Bslash>` — the two conventional leaders — as opening keys.
+
+### right-hand side
+
+One or more ex lines, each `:{command}<CR>` or nvim's `<cmd>{command}<CR>`, e.g. `":tree<CR>"`, `"<cmd>model opus<CR>"`, or `":tree<CR>:lazygit<CR>"` to run two in order. The `<CR>` terminator is required, exactly as it is in vim. Every command resolves through the [pi-command bridge](#pi-command-bridge) — same quit, reserved-name, and `exCommand.piDispatch` rules — and a dispatch leaves the prompt, cursor, undo, redo, and `.` untouched. Key-sequence right-hand sides (`"dd"`) are not supported.
+
+### rejections and conflicts
+
+`set` returns `false` and reports a warning notification. Rejected are: an unparsable or unusable left-hand side, a right-hand side that is not `:{command}<CR>`/`<cmd>{command}<CR>`, and a conflict. **First registration wins**: a later keymap with the same keys/prefix/etc is skipped and reported.
+
+### listing keymaps
+
+`list()` returns a detached snapshot of registered keymaps:
+
+```ts
+[
+  {
+    lhs: "<leader>g",          // as the extension wrote it
+    rhs: ":lazygit<CR>",       // as the extension wrote it
+    description: "Open lazygit",
+    keys: ["<Space>", "g"],    // one entry per key press, <leader> resolved
+    commands: ["lazygit"],     // ex lines the keymap runs, colons stripped
+  },
+]
+```
+
+### when keymaps fire
+
+Normal mode only. They are ignored in insert and visual mode, while a count or operator is pending, and inside EX mini-mode; `Esc` cancels a half-typed sequence; there is no pending-sequence indicator. Registration is live — `set` and `del` take effect on the next keystroke, and the table survives Pi rebuilding the editor.
 
 ---
 
