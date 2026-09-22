@@ -4,9 +4,8 @@
  * Keymaps are registered as key notation sequence (https://neovim.io/doc/user/intro.html#key-notation),
  * and the number of ex lines (`:{command}<CR>`).
  *
- * Mappings are normal-mode only, they take no count, they
- * are never recursive, and unlike nvim, pi-vim has no `timeoutlen`, so an unfinished sequence
- * is dropped rather than replayed as builtin commands.
+ * Mappings are normal-mode only, they take no count, and they
+ * are never recursive. A sequence broken by an unmapped key is retyped into the editor.
  */
 
 import { type KeyId, matchesKey } from "@earendil-works/pi-tui";
@@ -255,7 +254,7 @@ function sequenceId(tokens: readonly KeyToken[]): string {
 export type KeymapMatch =
   | { kind: "none" }
   | { kind: "pending" }
-  | { kind: "run"; entry: ParsedKeymapEntry };
+  | { kind: "completed"; entry: ParsedKeymapEntry };
 
 /** Session-wide keymap table */
 export class KeymapRegistry {
@@ -351,7 +350,8 @@ export class KeymapRegistry {
         return token !== undefined && keyTokenMatches(token, data);
       });
       if (!matches) continue;
-      if (entry.tokens.length === keys.length) return { kind: "run", entry };
+      if (entry.tokens.length === keys.length)
+        return { kind: "completed", entry };
       pending = true;
     }
 

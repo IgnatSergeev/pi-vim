@@ -294,6 +294,7 @@ export class ModalEditor extends CustomEditor {
   private lastCharMotion: LastCharMotion | null = null;
   private keymaps: KeymapRegistry | null = null;
   private pendingKeymapKeys: string[] = [];
+  private forceBuiltinDispatch: boolean = false;
   private discardingBracketedPasteInNormalMode: boolean = false;
   private pendingEscWhileDiscardingBracketedPasteInNormalMode: boolean = false;
   private wordBoundaryCache = new WordBoundaryCache();
@@ -2516,10 +2517,15 @@ export class ModalEditor extends CustomEditor {
   /**
    * Consumes the key if it corresponds to some registered keymap.
    * Returns true when the key was consumed.
+   *
+   * If the key completes a keymap, runs the actions.
+   * If the key leaves keymap pending, updates the pending keys.
+   * If the key breaks the pending sequence, retypes the sequence.
    */
   private handleKeymapKey(data: string): boolean {
-    const keymaps = this.keymaps;
-    if (!keymaps || keymaps.size === 0) return false;
+    if (!this.keymaps || this.keymaps.size === 0) return false;
+
+    if (this.forceBuiltinDispatch) return false;
 
     if (this.pendingKeymapKeys.length === 0) {
       // Keymaps are normal-mode only, take no count, and never interrupt a
@@ -2529,35 +2535,52 @@ export class ModalEditor extends CustomEditor {
     }
 
     const keys = [...this.pendingKeymapKeys, data];
-    this.pendingKeymapKeys = [];
+    const match = this.keymaps.match(keys);
 
-    if (this.resolveKeymapKeys(keys)) return true;
-
-    // The sequence is dropped, but the key that ended it may open a
-    // new one on its own — `<leader><leader>g` reaching a `<leader>g` keymap.
-    if (keys.length > 1) {
-      this.resolveKeymapKeys([data]);
-      return true;
+    switch (match.kind) {
+      case "pending": {
+        this.pendingKeymapKeys = keys;
+        return true;
+      }
+      case "completed": {
+        this.pendingKeymapKeys = [];
+        for (const action of match.entry.actions) {
+          this.executeExCommandLine(action.ex);
+        }
+        return true;
+      }
+      case "none": {
+        this.pendingKeymapKeys = [];
+        if (keys.length > 1) {
+          this.replayKeymapKeys(keys);
+          return true;
+        }
+        return false;
+      }
+      default:
+        return false;
     }
-    return false;
   }
 
-  /** Executes a completed keymap actions if the key sequence matches any.
-   *   Keeps an unfinished sequence pending if it matches any keymap prefix.
-   *   Does nothing and returns false when the sequence does not match any keymap prefix. */
-  private resolveKeymapKeys(keys: string[]): boolean {
-    const match = this.keymaps?.match(keys);
-    if (match?.kind === "run") {
-      for (const action of match.entry.actions) {
-        this.executeExCommandLine(action.ex);
-      }
-      return true;
+  /**
+   * Re-types an unmatched keymap sequence.
+   *
+   * The first key is forced through the builtin dispatch; the rest go
+   * through the full key path.
+   */
+  private replayKeymapKeys(keys: readonly string[]): void {
+    const [first, ...rest] = keys;
+    if (first === undefined) return;
+
+    const wasForcingBuiltinDispatch = this.forceBuiltinDispatch;
+    this.forceBuiltinDispatch = true;
+    try {
+      this.handleInput(first);
+    } finally {
+      this.forceBuiltinDispatch = wasForcingBuiltinDispatch;
     }
-    if (match?.kind === "pending") {
-      this.pendingKeymapKeys = keys;
-      return true;
-    }
-    return false;
+
+    for (const key of rest) this.handleInput(key);
   }
 
   private handleNormalMode(input: string): void {

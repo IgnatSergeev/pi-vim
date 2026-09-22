@@ -203,8 +203,13 @@ flowchart TD
     km -- no --> dispatch["g-prefix, counts, normal keys"]
 ```
 
-`handleKeymapKey` runs first inside `handleNormalMode`, but only claims a
-key when the registry has an entry starting with it. In case the pending keymap sequence is broken (unmapped key met), it is dropped rather than replayed.
+`handleKeymapKey` claims a key when the registry has an entry starting
+with pending keymap sequence followed by the arrived key, or in case the key
+brakes non empty pending sequence.
+When a pending sequence is broken (an unmapped key arrives),
+`replayKeymapKeys` retypes the pending keys into the editor:
+the first key is forced through the builtin dispatch (stops from re-opening the same sequence)
+the rest go back through `handleInput`, so a tail that starts a fresh keymap still reaches it.
 
 `handleVisualMode` returns a boolean rather than owning the whole key
 space: motions and counts deliberately fall through to `handleNormalMode`,

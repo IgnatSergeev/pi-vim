@@ -81,7 +81,7 @@ describe("nvim keymaps parity", () => {
     assert.equal(pi.register, "");
   });
 
-  it("drops an unmapped sequence, where nvim replays it", async () => {
+  it("replays an unmapped sequence", async () => {
     const testCase: NvimParityCase = {
       name: "leader then an unmapped key",
       initial: { text: "hello", cursor: { line: 0, col: 0 } },
@@ -99,10 +99,47 @@ describe("nvim keymaps parity", () => {
     assert.deepEqual(nvim.cursor, { line: 0, col: 1 });
     assert.equal(nvim.register, "e");
 
-    // pi-vim: `<Space>` starts the keymap, `x` breaks it, both keys are ignored
-    assert.equal(pi.text, "hello");
+    // pi-vim: `<Space>` is inert, `x` deletes into the register.
+    assert.equal(pi.text, "ello");
     assert.deepEqual(pi.cursor, { line: 0, col: 0 });
-    assert.deepEqual(pi.dispatched, []);
+    assert.equal(pi.register, "h");
+  });
+
+  it("replays a unmapped sequence that ends in an operator", async () => {
+    const testCase: NvimParityCase = {
+      name: "leader then dw",
+      initial: { text: "hello world", cursor: { line: 0, col: 0 } },
+      keys: [" ", "d", "w"],
+      ...NVIM_SETUP,
+    };
+
+    const [pi, nvim] = await Promise.all([
+      Promise.resolve(runPiCaseWithKeymaps(testCase, PI_KEYMAPS)),
+      runNvimParityCase(testCase),
+    ]);
+
+    // nvim: `<Space>` moves right, `dw` deletes to the end of the word.
+    assert.equal(nvim.text, "hworld");
+    // pi-vim: `<Space>` is inert, `dw` deletes to the end of the word.
+    assert.equal(pi.text, "world");
+  });
+
+  it("executes a keymap after a sequence break", async () => {
+    const testCase: NvimParityCase = {
+      name: "two leaders then the mapped key",
+      initial: { text: "hello", cursor: { line: 0, col: 0 } },
+      keys: [" ", " ", "g"],
+      ...NVIM_SETUP,
+    };
+
+    const [pi, nvim] = await Promise.all([
+      Promise.resolve(runPiCaseWithKeymaps(testCase, PI_KEYMAPS)),
+      runNvimParityCase(testCase),
+    ]);
+
+    assert.equal(nvim.register, "RAN");
+    assert.deepEqual(pi.dispatched, ["/lazygit"]);
+    assert.equal(pi.text, nvim.text);
   });
 
   it("waits indefinitely for an unfinished sequence, where nvim times out", async () => {

@@ -9974,28 +9974,67 @@ describe("normal-mode keymaps", () => {
     assert.ok(session.editor.render(80).at(-1)?.endsWith(" NORMAL "));
   });
 
-  it("drops an unmapped sequence without running its keys", () => {
+  it("replays an unmapped sequence as builtin keys", () => {
     const session = createKeymapSession("hello");
 
     sendKeys(session.editor, [" ", "x"]);
 
     assert.deepEqual(session.dispatched, []);
     assert.deepEqual(session.notifications, []);
-    assert.equal(session.editor.getText(), "hello");
-
-    sendKeys(session.editor, ["x"]);
     assert.equal(session.editor.getText(), "ello");
+    assert.equal(session.editor.getRegister(), "h");
+  });
+
+  it("replays an unmapped sequence with an operator ending", () => {
+    const session = createKeymapSession("hello world", [
+      ["<leader>g", ":lazygit<CR>"],
+    ]);
+
+    sendKeys(session.editor, [" ", "d", "w"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), "world");
+  });
+
+  it("keeps a replayed change dot-repeatable and undoable", () => {
+    const session = createKeymapSession("abc def ghi");
+
+    sendKeys(session.editor, [" ", "d", "w"]);
+    assert.equal(session.editor.getText(), "def ghi");
+
+    sendKeys(session.editor, ["."]);
+    assert.equal(session.editor.getText(), "ghi");
+
+    sendKeys(session.editor, ["u", "u"]);
+    assert.equal(session.editor.getText(), "abc def ghi");
+  });
+
+  it("replays an unmapped sequence mode change", () => {
+    const session = createKeymapSession("hello");
+
+    sendKeys(session.editor, [" ", "i", "X"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getMode(), "insert");
+    assert.equal(session.editor.getText(), "Xhello");
   });
 
   it("restarts a sequence when the unmapped key can open one", () => {
     const session = createKeymapSession("hello");
 
-    // <leader><leader>g: the second leader ends a dead sequence and opens a
-    // fresh one, so the keymap still fires.
     sendKeys(session.editor, [" ", " ", "g"]);
 
     assert.deepEqual(session.dispatched, ["/lazygit"]);
     assert.equal(session.editor.getText(), "hello");
+  });
+
+  it("replays every key of a multi key unmapped sequence with count", () => {
+    const session = createKeymapSession("hello", [["<leader>2s", ":tree<CR>"]]);
+
+    sendKeys(session.editor, [" ", "2", "x"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), "llo");
   });
 
   it("leaves the leader alone when no keymap is registered", () => {

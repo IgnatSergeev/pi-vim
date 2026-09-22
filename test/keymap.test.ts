@@ -362,7 +362,7 @@ describe("keymap registry", () => {
     assert.equal(registry.match([" "]).kind, "pending");
     assert.equal(registry.match(["g"]).kind, "none");
     assert.equal(registry.match([" ", "g"]).kind, "pending");
-    assert.equal(registry.match([" ", "g", "s"]).kind, "run");
+    assert.equal(registry.match([" ", "g", "s"]).kind, "completed");
     assert.equal(registry.match([" ", "x"]).kind, "none");
   });
 
