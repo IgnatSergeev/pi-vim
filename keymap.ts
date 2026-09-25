@@ -4,8 +4,11 @@
  * Keymaps are registered as key notation sequence (https://neovim.io/doc/user/intro.html#key-notation),
  * and the number of ex lines (`:{command}<CR>`).
  *
- * Mappings are normal-mode only, they take no count, and they
- * are never recursive. A sequence broken by an unmapped key is retyped into the editor.
+ * Mappings are normal-mode only, never recursive and never interrupt a pending builtin command (count not included).
+ * A sequence broken by an unmapped key is retyped into the editor.
+ *
+ * Mappings may use any key except `<Esc>`, as it cancels the pending sequence.
+ * Keymaps can silently shadow pi-vim builtins, and be unreachable if the keys are swallowed by pi shortcuts.
  */
 
 import { type KeyId, matchesKey } from "@earendil-works/pi-tui";
@@ -46,44 +49,11 @@ export type ResolvedKeymapEntry = RawKeymapEntry & {
 
 export const DEFAULT_LEADER_NOTATION = "<Space>";
 
-const REJECTED_KEYMAP_FIRST_KEY_SET = new Set<string>([
-  ..."0123456789",
-  ..."hjkl$^_wbeWBE{}%",
-  ..."fFtT;,",
-  ..."ixXDCSsaAIoO",
-  ..."dcyJpPYrvV",
-  ..."gG:u.",
-  ..."/?nN",
-  ..."mq@zZ",
-  ...`"'\``,
-  ..."[]()",
-  ..."HML",
-  ..."RUKQ",
-  ..."~<>=|",
-  ..."&*#+-!",
-]);
-
-function isPrintableKey(token: KeyToken): boolean {
-  if (token.bytes === undefined) return false;
-  for (const char of token.bytes) {
-    const codePoint = char.codePointAt(0);
-    if (codePoint === undefined || codePoint < 32 || codePoint === 127) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** Rejects keys a keymap must not start with */
-export function rejectFirstKey(token: KeyToken): string | null {
-  if (!isPrintableKey(token)) {
-    return `${token.notation} cannot start a keymap: Pi's editor owns non-printable keys`;
-  }
-  if (
-    token.bytes !== undefined &&
-    REJECTED_KEYMAP_FIRST_KEY_SET.has(token.bytes)
-  ) {
-    return `${token.notation} cannot start a keymap: normal mode uses it`;
+/** Rejects keys a keymap must not contain */
+export function rejectKey(token: KeyToken): string | null {
+  const ESCAPE = "\x1b";
+  if (keyTokenMatches(token, ESCAPE)) {
+    return `${token.notation} cannot be used in a keymap: it cancels a pending sequence`;
   }
   return null;
 }
@@ -277,8 +247,10 @@ export class KeymapRegistry {
     const [first] = parsedKeys.tokens;
     if (!first) return "empty key sequence";
 
-    const rejected = rejectFirstKey(first);
-    if (rejected) return rejected;
+    for (const token of parsedKeys.tokens) {
+      const rejected = rejectKey(token);
+      if (rejected) return rejected;
+    }
 
     const parsedCmds = parseCmdSequence(rhs);
     if ("error" in parsedCmds) return parsedCmds.error;
@@ -391,8 +363,10 @@ export function resolveLeaderTokens(value: unknown): {
   const parsed = parseNotationSequence(value);
   if ("error" in parsed) return invalid(parsed.error);
 
-  const rejected = rejectFirstKey(parsed.tokens[0]);
-  if (rejected) return invalid(rejected);
+  for (const token of parsed.tokens) {
+    const rejected = rejectKey(token);
+    if (rejected) return invalid(rejected);
+  }
 
   return { tokens: parsed.tokens, notation: value };
 }

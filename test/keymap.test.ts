@@ -7,7 +7,6 @@ import {
   keyTokenMatches,
   parseCmdSequence,
   parseNotationSequence,
-  rejectFirstKey,
   resolveLeaderTokens,
 } from "../keymap.js";
 
@@ -129,49 +128,6 @@ describe("keymap cmd parser", () => {
   it("rejects a string that is not a command", () => {
     for (const rhs of ["dd<CR>", "<CR>", ":<CR>", "<cmd><CR>"]) {
       assert.ok("error" in parseCmdSequence(rhs), rhs);
-    }
-  });
-});
-
-describe("keymap first-key policy", () => {
-  it("rejects keys normal mode uses or reserves", () => {
-    // Mirrors the policy in keymap.ts; a key leaving that list must fail here.
-    const rejected = [
-      ..."0123456789",
-      ..."hjkl$^_wbeWBE{}%",
-      ..."fFtT;,",
-      ..."ixXDCSsaAIoO",
-      ..."dcyJpPYrvV",
-      ..."gG:u.",
-      ..."/?nN",
-      ..."mq@zZ",
-      ...`"'\``,
-      ..."[]()",
-      ..."HML",
-      ..."RUKQ",
-      ..."~<>=|",
-      ..."&*#+-!",
-    ];
-    for (const key of rejected) {
-      const [token] = tokens(key === "<" ? "<lt>" : key);
-      assert.ok(token, key);
-      assert.ok(rejectFirstKey(token), `expected ${key} to be rejected`);
-    }
-  });
-
-  it("rejects non-printable keys, which belong to Pi's editor", () => {
-    for (const notation of ["<CR>", "<Esc>", "<Tab>", "<C-a>", "<Up>"]) {
-      const [token] = tokens(notation);
-      assert.ok(token, notation);
-      assert.ok(rejectFirstKey(token), notation);
-    }
-  });
-
-  it("accepts the keys normal mode leaves free", () => {
-    for (const notation of ["<Space>", "<Bslash>"]) {
-      const [token] = tokens(notation);
-      assert.ok(token, notation);
-      assert.equal(rejectFirstKey(token), null, notation);
     }
   });
 });
@@ -298,14 +254,39 @@ describe("keymap registry", () => {
     assert.equal(registry.list().length, 2);
   });
 
-  it("reports and skips a rejected first key", () => {
+  it("rejects escape anywhere in the sequence", () => {
     const registry = createRegistry();
 
-    assert.equal(
-      registry.set("dd", ":tree<CR>"),
-      "d cannot start a keymap: normal mode uses it",
-    );
+    const rejected: Array<[string, string]> = [
+      ["<Esc>x", "<Esc>"],
+      ["<leader><Esc>", "<Esc>"],
+      ["<C-[>", "<C-[>"],
+    ];
+
+    for (const [keymap, notation] of rejected) {
+      assert.equal(
+        registry.set(keymap, ":tree<CR>"),
+        `${notation} cannot be used in a keymap: it cancels a pending sequence`,
+      );
+    }
     assert.equal(registry.size, 0);
+  });
+
+  it("registers a keymap that contains non printable key", () => {
+    const registry = createRegistry();
+
+    assert.equal(registry.set("<C-g>x", ":tree<CR>"), null);
+    assert.equal(registry.set("<BS>", ":lazygit<CR>"), null);
+    assert.equal(registry.size, 2);
+  });
+
+  it("registers a keymap that starts with a key normal mode uses", () => {
+    const registry = createRegistry();
+
+    assert.equal(registry.set("dx", ":tree<CR>"), null);
+    assert.equal(registry.size, 1);
+    assert.equal(registry.match(["d"]).kind, "pending");
+    assert.equal(registry.match(["d", "x"]).kind, "completed");
   });
 
   it("reports and skips an unusable cmd", () => {
@@ -389,18 +370,42 @@ describe("leader resolver", () => {
     assert.equal(resolveLeaderTokens("<Bslash>").tokens[0]?.bytes, "\\");
   });
 
-  it("warns and falls back for a key normal mode owns", () => {
-    const resolved = resolveLeaderTokens("d");
+  it("warns and falls back for escape", () => {
+    const resolved = resolveLeaderTokens("<Esc>");
 
     assert.equal(resolved.tokens[0]?.bytes, " ");
     assert.equal(
       resolved.warning,
-      "Invalid piVim.leader: d cannot start a keymap: normal mode uses it.",
+      "Invalid piVim.leader: <Esc> cannot be used in a keymap: it cancels a pending sequence.",
     );
   });
 
+  it("accepts a non printable leader", () => {
+    const resolved = resolveLeaderTokens("<C-g>");
+
+    assert.equal(resolved.tokens[0]?.keyId, "ctrl+g");
+    assert.equal(resolved.warning, undefined);
+  });
+
+  it("accepts a leader normal mode uses", () => {
+    const resolved = resolveLeaderTokens("d");
+
+    assert.equal(resolved.tokens[0]?.bytes, "d");
+    assert.equal(resolved.warning, undefined);
+  });
+
+  it("accepts a multi key leader", () => {
+    const resolved = resolveLeaderTokens("ab");
+
+    assert.deepEqual(
+      resolved.tokens.map((token) => token.bytes),
+      ["a", "b"],
+    );
+    assert.equal(resolved.warning, undefined);
+  });
+
   it("warns and falls back for unusable values", () => {
-    for (const value of ["", "ab", "<Nope>", 42, null, {}]) {
+    for (const value of ["", "<Nope>", 42, null, {}]) {
       const resolved = resolveLeaderTokens(value);
       assert.equal(resolved.tokens[0]?.bytes, " ", String(value));
       assert.match(resolved.warning ?? "", /Invalid piVim\.leader/);

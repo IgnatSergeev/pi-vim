@@ -142,6 +142,110 @@ describe("nvim keymaps parity", () => {
     assert.equal(pi.text, nvim.text);
   });
 
+  it("replayes builtin operator when a keymap starting with it breaks", async () => {
+    const testCase: NvimParityCase = {
+      name: "dw with a dx mapping registered",
+      initial: { text: "alpha beta", cursor: { line: 0, col: 0 } },
+      keys: ["d", "w"],
+      leader: "<Space>",
+      keymaps: [{ lhs: "dx", rhs: ':let @" = "RAN"<CR>' }],
+    };
+
+    const [pi, nvim] = await Promise.all([
+      Promise.resolve(runPiCaseWithKeymaps(testCase, [["dx", ":lazygit<CR>"]])),
+      runNvimParityCase(testCase),
+    ]);
+
+    assert.equal(nvim.text, "beta");
+    assert.equal(pi.text, nvim.text);
+    assert.deepEqual(pi.cursor, nvim.cursor);
+    assert.deepEqual(pi.dispatched, []);
+  });
+
+  it("runs a keymap that starts with builtin operator", async () => {
+    const testCase: NvimParityCase = {
+      name: "dx with a dx mapping registered",
+      initial: { text: "alpha beta", cursor: { line: 0, col: 0 } },
+      keys: ["d", "x"],
+      leader: "<Space>",
+      keymaps: [{ lhs: "dx", rhs: ':let @" = "RAN"<CR>' }],
+    };
+
+    const [pi, nvim] = await Promise.all([
+      Promise.resolve(runPiCaseWithKeymaps(testCase, [["dx", ":lazygit<CR>"]])),
+      runNvimParityCase(testCase),
+    ]);
+
+    assert.equal(nvim.text, "alpha beta");
+    assert.equal(nvim.register, "RAN");
+    assert.equal(pi.text, nvim.text);
+    assert.deepEqual(pi.cursor, nvim.cursor);
+    assert.deepEqual(pi.dispatched, ["/lazygit"]);
+  });
+
+  it("shadows a builtin operator", async () => {
+    const testCase: NvimParityCase = {
+      name: "dd with a d mapping registered",
+      initial: { text: "one\ntwo", cursor: { line: 0, col: 0 } },
+      keys: ["d", "d"],
+      leader: "<Space>",
+      keymaps: [{ lhs: "d", rhs: ':let @" = "RAN"<CR>' }],
+    };
+
+    const [pi, nvim] = await Promise.all([
+      Promise.resolve(runPiCaseWithKeymaps(testCase, [["d", ":lazygit<CR>"]])),
+      runNvimParityCase(testCase),
+    ]);
+
+    assert.equal(nvim.text, "one\ntwo");
+    assert.equal(pi.text, nvim.text);
+    assert.deepEqual(pi.dispatched, ["/lazygit", "/lazygit"]);
+    assert.equal(nvim.register, "RAN");
+  });
+
+  it("keymap does not interrupt pending operator", async () => {
+    const testCase: NvimParityCase = {
+      name: "rqq with a qq mapping registered",
+      initial: { text: "a q b", cursor: { line: 0, col: 0 } },
+      keys: ["d", "w", "q"],
+      leader: "<Space>",
+      keymaps: [{ lhs: "wq", rhs: ':let @" = "RAN"<CR>' }],
+    };
+
+    const [pi, nvim] = await Promise.all([
+      Promise.resolve(runPiCaseWithKeymaps(testCase, [["wq", ":lazygit<CR>"]])),
+      runNvimParityCase(testCase),
+    ]);
+
+    assert.equal(nvim.text, "q b");
+    assert.equal(pi.text, nvim.text);
+    assert.deepEqual(pi.cursor, nvim.cursor);
+    assert.deepEqual(pi.dispatched, []);
+  });
+
+  it("keymap interrupts and ignores a count", async () => {
+    const testCase: NvimParityCase = {
+      name: "2dx with a dx mapping registered",
+      initial: { text: "alpha beta gamma", cursor: { line: 0, col: 0 } },
+      keys: ["2", "d", "x"],
+      leader: "<Space>",
+      keymaps: [{ lhs: "dx", rhs: '<Cmd>let @" = "RAN"<CR>' }],
+    };
+
+    const [pi, nvim] = await Promise.all([
+      Promise.resolve(runPiCaseWithKeymaps(testCase, [["dx", ":lazygit<CR>"]])),
+      runNvimParityCase(testCase),
+    ]);
+
+    assert.equal(nvim.register, "RAN");
+    assert.deepEqual(pi.dispatched, ["/lazygit"]);
+
+    assert.equal(nvim.text, "alpha beta gamma");
+    assert.equal(pi.text, nvim.text);
+    assert.deepEqual(pi.cursor, nvim.cursor);
+    assert.equal(pi.mode, nvim.mode);
+  });
+
   it("waits indefinitely for an unfinished sequence, where nvim times out", async () => {
     const testCase: NvimParityCase = {
       name: "leader alone",

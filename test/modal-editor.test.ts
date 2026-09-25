@@ -10009,6 +10009,128 @@ describe("normal-mode keymaps", () => {
     assert.equal(session.editor.getText(), "abc def ghi");
   });
 
+  it("replayes builtin operator when a keymap starting with it breaks", () => {
+    const session = createKeymapSession("alpha beta", [["dx", ":tree<CR>"]]);
+
+    sendKeys(session.editor, ["d", "w"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), "beta");
+  });
+
+  it("keeps a replayed builtin operator dot-repeatable and undoable", () => {
+    const session = createKeymapSession("abc def ghi", [["dx", ":tree<CR>"]]);
+
+    sendKeys(session.editor, ["d", "w"]);
+    assert.equal(session.editor.getText(), "def ghi");
+
+    sendKeys(session.editor, ["."]);
+    assert.equal(session.editor.getText(), "ghi");
+
+    sendKeys(session.editor, ["u", "u"]);
+    assert.equal(session.editor.getText(), "abc def ghi");
+  });
+
+  it("runs a keymap that starts with builtin operator", () => {
+    const session = createKeymapSession("alpha beta", [["dx", ":tree<CR>"]]);
+
+    sendKeys(session.editor, ["d", "x"]);
+
+    assert.deepEqual(session.dispatched, ["/tree"]);
+    assert.equal(session.editor.getText(), "alpha beta");
+  });
+
+  it("keymap shadows a builtin operator", () => {
+    const session = createKeymapSession("one two", [["d", ":tree<CR>"]]);
+
+    sendKeys(session.editor, ["d", "d"]);
+
+    assert.deepEqual(session.dispatched, ["/tree", "/tree"]);
+    assert.equal(session.editor.getText(), "one two");
+  });
+
+  it("keymap does not interrupt pending operator", () => {
+    const session = createKeymapSession("alpha beta", [["wq", ":tree<CR>"]]);
+
+    sendKeys(session.editor, ["d", "w", "q"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), "beta");
+  });
+
+  it("keymap does not iterrupt pending motion", () => {
+    const session = createKeymapSession("a q b", [["qq", ":tree<CR>"]]);
+
+    sendKeys(session.editor, ["d", "f", "q", "q"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), " b");
+  });
+
+  it("keymap does not interrupt pending replace", () => {
+    const session = createKeymapSession("abc", [["qq", ":tree<CR>"]]);
+
+    sendKeys(session.editor, ["r", "q", "q"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), "qbc");
+  });
+
+  it("keymap interrupts and ignores a count", () => {
+    const session = createKeymapSession("alpha beta gamma", [
+      ["dx", ":tree<CR>"],
+    ]);
+
+    sendKeys(session.editor, ["2", "d", "x"]);
+
+    assert.deepEqual(session.dispatched, ["/tree"]);
+    assert.equal(session.editor.getText(), "alpha beta gamma");
+  });
+
+  it("keymap does not leak the count into the next command", () => {
+    const session = createKeymapSession("alpha beta gamma", [
+      ["dx", ":tree<CR>"],
+    ]);
+
+    sendKeys(session.editor, ["2", "d", "x"]);
+    sendKeys(session.editor, ["d", "w"]);
+
+    assert.equal(session.editor.getText(), "beta gamma");
+  });
+
+  it("keeps the count for the replayed builtin operator", () => {
+    const session = createKeymapSession("alpha beta gamma", [
+      ["dx", ":tree<CR>"],
+    ]);
+
+    sendKeys(session.editor, ["2", "d", "w"]);
+
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), "gamma");
+  });
+
+  it("runs a keymap that starts with non printable key", () => {
+    const session = createKeymapSession("hello", [["<C-g>x", ":tree<CR>"]]);
+
+    sendKeys(session.editor, ["\x07", "x"]);
+
+    assert.deepEqual(session.dispatched, ["/tree"]);
+    assert.equal(session.editor.getText(), "hello");
+  });
+
+  it("replays a non printable key when keymap sequence breaks", () => {
+    const session = createKeymapSession("a b", [
+      ["<A-f>x", ":tree<CR>"],
+    ]);
+
+    sendKeys(session.editor, ["\x1bf"]);
+    assert.deepEqual(session.editor.getCursor(), { line: 0, col: 0 });
+
+    sendKeys(session.editor, ["d", "w"]);
+    assert.deepEqual(session.dispatched, []);
+    assert.equal(session.editor.getText(), "ab");
+  });
+
   it("replays an unmapped sequence mode change", () => {
     const session = createKeymapSession("hello");
 
@@ -10079,14 +10201,12 @@ describe("normal-mode keymaps", () => {
     assert.equal(session.editor.getText(), "hello");
   });
 
-  it("does not interrupt a pending count", () => {
+  it("fires behind a pending count", () => {
     const session = createKeymapSession("hello world");
 
     sendKeys(session.editor, ["2", " ", "g"]);
 
-    // The count swallows the leader as an unsupported counted command, and the
-    // trailing `g` opens the builtin `g` prefix instead of finishing a keymap.
-    assert.deepEqual(session.dispatched, []);
+    assert.deepEqual(session.dispatched, ["/lazygit"]);
     assert.equal(session.editor.getText(), "hello world");
     assert.deepEqual(session.editor.getCursor(), { line: 0, col: 0 });
   });
@@ -10328,12 +10448,12 @@ describe("pi-vim extension keymap API", () => {
     const { extension, api, restore } = await installWithApi();
 
     try {
-      assert.equal(api.keymap.set("dd", ":tree<CR>"), false);
+      assert.equal(api.keymap.set("<Esc>d", ":tree<CR>"), false);
 
       assert.deepEqual(extension.notifications, [
         {
           message:
-            'pi-vim keymap.set "dd": d cannot start a keymap: normal mode uses it',
+            'pi-vim keymap.set "<Esc>d": <Esc> cannot be used in a keymap: it cancels a pending sequence',
           type: "warning",
         },
       ]);
@@ -10381,14 +10501,16 @@ describe("pi-vim extension keymap API", () => {
   });
 
   it("reports an invalid leader and falls back to space", async () => {
-    const { extension, api, restore } = await installWithApi({ leader: "d" });
+    const { extension, api, restore } = await installWithApi({
+      leader: "<Esc>",
+    });
 
     try {
       assert.equal(api.leader, "<Space>");
       assert.deepEqual(extension.notifications, [
         {
           message:
-            "Invalid piVim.leader: d cannot start a keymap: normal mode uses it.",
+            "Invalid piVim.leader: <Esc> cannot be used in a keymap: it cancels a pending sequence.",
           type: "warning",
         },
       ]);

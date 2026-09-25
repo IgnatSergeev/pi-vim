@@ -1183,6 +1183,24 @@ export class ModalEditor extends CustomEditor {
     }
   }
 
+  /** True when a builtin normal-mode command or prefix is pending */
+  private hasPendingBuiltinState(): boolean {
+    return Boolean(this.prefixCount) || this.hasPendingBuiltinCommand();
+  }
+
+  /** True when a builtin normal-mode command is pending */
+  private hasPendingBuiltinCommand(): boolean {
+    return Boolean(
+      this.pendingMotion ||
+        this.pendingTextObject ||
+        this.pendingOperator ||
+        this.operatorCount ||
+        this.pendingG ||
+        this.pendingGCount ||
+        this.pendingReplace,
+    );
+  }
+
   private clearPendingState(): void {
     this.pendingMotion = null;
     this.pendingTextObject = null;
@@ -1530,17 +1548,7 @@ export class ModalEditor extends CustomEditor {
       return;
     }
 
-    if (
-      this.pendingMotion ||
-      this.pendingTextObject ||
-      this.pendingOperator ||
-      this.prefixCount ||
-      this.operatorCount ||
-      this.pendingG ||
-      this.pendingGCount ||
-      this.pendingReplace ||
-      this.pendingKeymapKeys.length > 0
-    ) {
+    if (this.hasPendingBuiltinState() || this.pendingKeymapKeys.length > 0) {
       this.clearPendingState();
       this.cancelRepeatableCommand();
       return;
@@ -2528,10 +2536,8 @@ export class ModalEditor extends CustomEditor {
     if (this.forceBuiltinDispatch) return false;
 
     if (this.pendingKeymapKeys.length === 0) {
-      // Keymaps are normal-mode only, take no count, and never interrupt a
-      // half-typed builtin command.
       if (isVisualMode(this.mode)) return false;
-      if (this.pendingG || this.prefixCount || this.operatorCount) return false;
+      if (this.hasPendingBuiltinCommand()) return false;
     }
 
     const keys = [...this.pendingKeymapKeys, data];
@@ -2544,6 +2550,7 @@ export class ModalEditor extends CustomEditor {
       }
       case "completed": {
         this.pendingKeymapKeys = [];
+        this.prefixCount = "";
         for (const action of match.entry.actions) {
           this.executeExCommandLine(action.ex);
         }
@@ -2584,9 +2591,9 @@ export class ModalEditor extends CustomEditor {
   }
 
   private handleNormalMode(input: string): void {
-    const data = isBackspaceLikeInput(input) ? "h" : input;
+    if (this.handleKeymapKey(input)) return;
 
-    if (this.handleKeymapKey(data)) return;
+    const data = isBackspaceLikeInput(input) ? "h" : input;
 
     if (this.pendingG) {
       if (isDigit(data)) {

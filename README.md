@@ -394,7 +394,7 @@ Default-equivalent `settings.json`:
 
 ### leader
 
-`leader`: the keys `<leader>` notation expands to in a keymap, written as a literal key or in nvim key notation — `"<Space>"` (the default), `"<Bslash>"`, `"\\"`. It must be a key normal mode does not own; anything else is reported as a warning and falls back to space. Read from the user-global settings file only.
+`leader`: the keys `<leader>` notation expands to in a keymap, written as a literal key or in key notation. `"<Space>"`  is the default. Only `<Esc>` is reported as a warning and falls back to space. Read from the user-global settings file only.
 
 Keymaps themselves are not configured here — extensions register them (see [keymap API](#keymap-api)).
 
@@ -514,7 +514,7 @@ pi-vim does not bundle any such tool and does not care which one you use — any
 | `%` matching | `()`, `[]`, `{}` only; lexical same-delimiter matching with no counts, quote/angle matching, parser/matchit logic, or mixed-delimiter validation | Also supports percentage jumps and broader matching |
 | Count prefix | Operators, motions, navigation, `x`, `r`, `p`, `P`; capped at `MAX_COUNT=9999` | Full support |
 | Named registers / macros / search | Not implemented; the unnamed register is supported | Supported |
-| Key mappings | Normal-mode only; a sequence must not start with a key normal mode owns, takes no count, and runs ex lines only. An unfinished or unmapped sequence is dropped | `:map` family for every mode, arbitrary right-hand sides, `timeoutlen` replay, remapping any key |
+| Key mappings | Normal-mode only, takes no count, and runs ex lines only. An unfinished sequence waits indefinitely | `:map` family for every mode, arbitrary right-hand sides, `timeoutlen` replay |
 | Ex commands | EX mini-mode quits (`:q`, `:qa`, `:quit`, `:qall`, `:quitall`, and their `!` forms), dispatches non-conflicting Pi slash commands (`:tree`, `:model opus`), and runs shell commands via `:!cmd`; vim ex semantics are reserved, not implemented | Full ex command-line surface |
 | Multi-line operators | `d/c/y` with `w/e/b`, `W/E/B`, `j/k`, and `G`; not the full Vim motion matrix | Rich cross-line semantics |
 
@@ -560,11 +560,8 @@ type PiVimApi = {
 
 ### left-hand side
 
+Mappings can contain any keys, except `<Esc>` and they can shadow pi-vim and pi builtins.
 Keys are written in [nvim key notation](https://neovim.io/doc/user/intro.html#key-notation): `<leader>`, `<Space>`, `<CR>`, `<Esc>`, `<Tab>`, `<BS>`, `<Del>`, `<lt>`, `<Bslash>`, `<Bar>`, `<Up>`/`<Down>`/`<Left>`/`<Right>`, `<Home>`/`<End>`/`<PageUp>`/`<PageDown>`, `<F1>`–`<F12>`, and the modifier forms `<C-x>`, `<M-x>`/`<A-x>`, `<S-x>`, `<D-x>` including combinations such as `<C-S-x>`. Names are case-insensitive, and anything else is a literal key.
-
-Keymaps limitation rule is ensured, because pi-vim has no `timeoutlen` and never replays a pending sequence as builtin commands:
-
-- **The first key must be one normal mode does not own.** Rejected are every key normal mode dispatches today and every key vim's normal mode defines that pi-vim has not implemented yet — `0`–`9`, `hjkl$^_wbeWBE{}%`, `fFtT;,`, `ixXDCSsaAIoO`, `dcyJpPYrvV`, `gG:u.`, `/?nN`, `mq@zZ`, `` "'` ``, `[]()`, `HML`, `RUKQ`, `~<>=|`, `&*#+-!` — plus every non-printable key (`<CR>`, `<Esc>`, `<Tab>`, arrows, `<C-…>`), because those reach Pi's own editor bindings. In practice that leaves `<Space>` and `<Bslash>` — the two conventional leaders — as opening keys.
 
 ### right-hand side
 
@@ -592,7 +589,9 @@ One or more ex lines, each `:{command}<CR>` or nvim's `<cmd>{command}<CR>`, e.g.
 
 ### when keymaps fire
 
-Normal mode only. They are ignored in insert and visual mode, while a count or operator is pending, and inside EX mini-mode; `Esc` cancels a half-typed sequence; there is no pending-sequence indicator. Registration is live — `set` and `del` take effect on the next keystroke, and the table survives Pi rebuilding the editor.
+Keymaps fire in normal mode only, they are ignored while a builtin command is pending (prefix count not included, it's discarded), and inside EX mini-mode. `Esc` cancels a pending keymap sequence.
+
+If an unexpected key breaks the sequence, the buffered keys are retyped into the editor. Registration is live — `set` and `del` take effect on the next keystroke, and the table survives Pi rebuilding the editor.
 
 ---
 
