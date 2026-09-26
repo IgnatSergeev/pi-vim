@@ -42,6 +42,7 @@ import {
 } from "./input-keys.js";
 import {
   KeymapRegistry,
+  type PendingKeymap,
   type ResolvedKeymapEntry,
   resolveLeaderTokens,
 } from "./keymap.js";
@@ -436,6 +437,10 @@ export class ModalEditor extends CustomEditor {
   setKeymapRegistry(registry: KeymapRegistry | null): void {
     this.keymaps = registry;
     this.pendingKeymapKeys = [];
+  }
+  getPendingKeymap(): PendingKeymap | null {
+    if (!this.keymaps || this.pendingKeymapKeys.length === 0) return null;
+    return this.keymaps.pending(this.pendingKeymapKeys);
   }
   getRegister(): string {
     return this.unnamedRegister;
@@ -4483,10 +4488,11 @@ export type PiVimKeymapApi = {
   set(lhs: string, rhs: string, description?: string): boolean;
   del(lhs: string): boolean;
   list(): ResolvedKeymapEntry[];
+  pending(): PendingKeymap | null;
 };
 
 export type PiVimApi = {
-  version: 1;
+  version: 2;
   leader: string;
   keymap: PiVimKeymapApi;
 };
@@ -4540,9 +4546,10 @@ export default function (pi: ExtensionAPI) {
     if (leader.warning) notifyWarning(leader.warning);
 
     const keymaps = new KeymapRegistry(leader.tokens);
+    let activeEditor: ModalEditor | null = null;
 
     const piVimApi: PiVimApi = {
-      version: 1,
+      version: 2,
       leader: leader.notation,
       keymap: {
         set: (keys, cmds, description) => {
@@ -4581,6 +4588,7 @@ export default function (pi: ExtensionAPI) {
           return keymaps.del(keys);
         },
         list: () => keymaps.list(),
+        pending: () => activeEditor?.getPendingKeymap() ?? null,
       },
     };
 
@@ -4632,6 +4640,7 @@ export default function (pi: ExtensionAPI) {
       emitInitialModeChange(editor.getMode(), emitModeChange);
       editor.setExCommandSettings(exCommand.settings);
       editor.setKeymapRegistry(keymaps);
+      activeEditor = editor;
       // Resolved at submit time so commands registered or reloaded mid-session
       // are dispatchable without restarting.
       editor.setCommandNamesFn(

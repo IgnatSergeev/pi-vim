@@ -12,7 +12,7 @@ import {
 
 function tokens(notation: string): KeyToken[] {
   const parsed = parseNotationSequence(notation, [
-    { bytes: " ", keyId: "space", notation: "<leader>" },
+    { bytes: " ", keyId: "space", notation: "<Space>" },
   ]);
   if ("error" in parsed) throw new Error(parsed.error);
   return parsed.tokens;
@@ -353,6 +353,153 @@ describe("keymap registry", () => {
 
     assert.equal(registry.match([" "]).kind, "none");
     assert.equal(registry.match(["\\"]).kind, "pending");
+  });
+});
+
+describe("canonical key notation", () => {
+  function canonical(notation: string): string[] {
+    return tokens(notation).map((token) => token.notation);
+  }
+
+  it("spells one key the same whichever way it was written", () => {
+    assert.deepEqual(canonical(" <space><Space><leader>"), [
+      "<Space>",
+      "<Space>",
+      "<Space>",
+      "<Space>",
+    ]);
+    assert.deepEqual(canonical("<CR><Enter><return>"), [
+      "<CR>",
+      "<CR>",
+      "<CR>",
+    ]);
+    assert.deepEqual(canonical("<c-x><C-X>"), ["<C-X>", "<C-X>"]);
+    assert.deepEqual(canonical("<A-x><M-x><Alt-x>"), [
+      "<M-x>",
+      "<M-x>",
+      "<M-x>",
+    ]);
+  });
+
+  it("orders modifiers M-C-S-D and folds shift into a letter", () => {
+    assert.deepEqual(canonical("<S-C-x><D-A-x><S-x><M-S-x><S-Tab>"), [
+      "<C-S-X>",
+      "<M-D-x>",
+      "X",
+      "<M-X>",
+      "<S-Tab>",
+    ]);
+  });
+
+  it("keeps literal keys and names the ones notation reserves", () => {
+    assert.deepEqual(canonical("gGé<lt><Bslash><Bar>"), [
+      "g",
+      "G",
+      "é",
+      "<lt>",
+      "\\",
+      "|",
+    ]);
+  });
+
+  it("names literal control characters", () => {
+    assert.deepEqual(canonical("\t\r\x7f\x07"), [
+      "<Tab>",
+      "<CR>",
+      "<BS>",
+      "<C-G>",
+    ]);
+  });
+
+  it("lists keymaps in canonical notation, and keeps the lhs as written", () => {
+    const registry = createRegistry();
+    registry.set("<leader><c-x>a", ":tree<CR>");
+
+    assert.deepEqual(registry.list()[0]?.keys, ["<Space>", "<C-X>", "a"]);
+    assert.equal(registry.list()[0]?.lhs, "<leader><c-x>a");
+  });
+});
+
+describe("pending keymap", () => {
+  it("is null when nothing is pending or no keymap continues the keys", () => {
+    const registry = createRegistry();
+    registry.set("<leader>gs", ":tree<CR>");
+
+    assert.equal(registry.pending([]), null);
+    assert.equal(registry.pending(["g"]), null);
+    assert.equal(registry.pending([" ", "x"]), null);
+  });
+
+  it("is null once the keys complete a keymap", () => {
+    const registry = createRegistry();
+    registry.set("<leader>g", ":lazygit<CR>");
+
+    assert.equal(registry.pending([" ", "g"]), null);
+  });
+
+  it("lists keymaps and groups that can follow, in registration order", () => {
+    const registry = createRegistry();
+    registry.set("<leader>g", ":lazygit<CR>", "Open lazygit");
+    registry.set("<leader>fa", ":tree<CR>", "Tree");
+    registry.set("<leader>fb", ":tree<CR>");
+    registry.set("<leader>c", ":compact<CR>");
+    registry.set("x", ":tree<CR>", "Not under leader");
+
+    assert.deepEqual(registry.pending([" "]), {
+      keys: ["<Space>"],
+      next: [
+        { key: "g", description: "Open lazygit", group: false, count: 1 },
+        { key: "f", description: "", group: true, count: 2 },
+        { key: "c", description: "", group: false, count: 1 },
+      ],
+    });
+  });
+
+  it("multi key pending sequence", () => {
+    const registry = createRegistry();
+    registry.set("<leader>fa", ":tree<CR>", "Tree");
+    registry.set("<leader>fb", ":tree<CR>", "Other tree");
+
+    assert.deepEqual(registry.pending([" ", "f"]), {
+      keys: ["<Space>", "f"],
+      next: [
+        { key: "a", description: "Tree", group: false, count: 1 },
+        { key: "b", description: "Other tree", group: false, count: 1 },
+      ],
+    });
+  });
+
+  it("merges one key written two ways into one entry", () => {
+    const registry = createRegistry();
+    registry.set("<leader><C-x>a", ":tree<CR>", "A");
+    registry.set("<Space><c-X>b", ":tree<CR>", "B");
+
+    assert.deepEqual(registry.pending([" "]), {
+      keys: ["<Space>"],
+      next: [{ key: "<C-X>", description: "", group: true, count: 2 }],
+    });
+  });
+
+  it("spells the typed keys canonically", () => {
+    const registry = createRegistry("<Bslash>");
+    registry.set("<leader><c-g>s", ":tree<CR>", "Tree");
+
+    assert.deepEqual(registry.pending(["\\", "\x07"])?.keys, ["\\", "<C-G>"]);
+  });
+
+  it("stops listing a keymap deleted mid-sequence", () => {
+    const registry = createRegistry();
+    registry.set("<leader>a", ":tree<CR>");
+    registry.set("<leader>b", ":tree<CR>");
+
+    registry.del("<leader>a");
+
+    assert.deepEqual(
+      registry.pending([" "])?.next.map((hint) => hint.key),
+      ["b"],
+    );
+    registry.del("<leader>b");
+    assert.equal(registry.pending([" "]), null);
   });
 });
 

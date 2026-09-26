@@ -10119,9 +10119,7 @@ describe("normal-mode keymaps", () => {
   });
 
   it("replays a non printable key when keymap sequence breaks", () => {
-    const session = createKeymapSession("a b", [
-      ["<A-f>x", ":tree<CR>"],
-    ]);
+    const session = createKeymapSession("a b", [["<A-f>x", ":tree<CR>"]]);
 
     sendKeys(session.editor, ["\x1bf"]);
     assert.deepEqual(session.editor.getCursor(), { line: 0, col: 0 });
@@ -10338,6 +10336,52 @@ describe("normal-mode keymaps", () => {
 
     assert.deepEqual(session.dispatched, []);
   });
+
+  describe("pending keymap report", () => {
+    const ENTRIES: Array<[string, string, string?]> = [
+      ["<leader>g", ":lazygit<CR>", "Open lazygit"],
+      ["<leader>fa", ":tree<CR>", "Tree"],
+    ];
+
+    it("is cleared before the mapped command runs", () => {
+      const session = createKeymapSession("hello", ENTRIES);
+      const seen: unknown[] = [];
+      session.editor.setRunCommandFn(() => {
+        seen.push(session.editor.getPendingKeymap());
+      });
+
+      sendKeys(session.editor, [" ", "g"]);
+
+      assert.deepEqual(seen, [null]);
+      assert.equal(session.editor.getPendingKeymap(), null);
+    });
+
+    it("is cleared when a key breaks the sequence", () => {
+      const session = createKeymapSession("hello", ENTRIES);
+
+      sendKeys(session.editor, [" ", "x"]);
+
+      assert.equal(session.editor.getPendingKeymap(), null);
+      assert.equal(session.editor.getText(), "ello");
+    });
+
+    it("is cleared by Esc", () => {
+      const session = createKeymapSession("hello", ENTRIES);
+
+      sendKeys(session.editor, [" ", "f", "\x1b"]);
+
+      assert.equal(session.editor.getPendingKeymap(), null);
+      assert.equal(session.editor.getMode(), "normal");
+    });
+
+    it("is cleared when the registry is swapped", () => {
+      const session = createKeymapSession("hello", ENTRIES);
+
+      sendKeys(session.editor, [" "]);
+      session.editor.setKeymapRegistry(null);
+
+      assert.equal(session.editor.getPendingKeymap(), null);
+    });
 });
 
 describe("pi-vim extension keymap API", () => {
@@ -10359,7 +10403,7 @@ describe("pi-vim extension keymap API", () => {
     const { api, restore } = await installWithApi();
 
     try {
-      assert.equal(api.version, 1);
+      assert.equal(api.version, 2);
       assert.equal(api.leader, "<Space>");
       assert.equal(typeof api.keymap.set, "function");
       assert.equal(typeof api.keymap.del, "function");
@@ -10378,7 +10422,7 @@ describe("pi-vim extension keymap API", () => {
       extension.emitEvent("pi-vim:api:request", null);
 
       assert.equal(late.length, 1);
-      assert.equal(late[0]?.version, 1);
+      assert.equal(late[0]?.version, 2);
     } finally {
       restore();
     }
@@ -10439,6 +10483,35 @@ describe("pi-vim extension keymap API", () => {
           commands: ["lazygit"],
         },
       ]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("reports the pending sequence of the live editor", async () => {
+    const { extension, api, restore } = await installWithApi();
+
+    try {
+      api.keymap.set("<leader>g", ":lazygit<CR>", "Open lazygit");
+      assert.equal(api.keymap.pending(), null);
+
+      const editor = extension.editorFactory(
+        stubTui,
+        stubTheme,
+        stubKeybindings,
+      );
+      sendKeys(editor, ["\x1b", " "]);
+
+      assert.deepEqual(api.keymap.pending(), {
+        keys: ["<Space>"],
+        next: [
+          { key: "g", description: "Open lazygit", group: false, count: 1 },
+        ],
+      });
+
+      extension.editorFactory(stubTui, stubTheme, stubKeybindings);
+
+      assert.equal(api.keymap.pending(), null);
     } finally {
       restore();
     }

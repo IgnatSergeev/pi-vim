@@ -85,7 +85,7 @@ changing behavior.
 | `index.ts` | modal state machine, key dispatch, operators, undo/redo, dot-repeat, visual selection anchor, put/register, render composition, EX mini-mode and the pi-command bridge, the `pi-vim:api` keymap API, session hooks | no (all mutable state) |
 | `types.ts` | `Mode`, `CharMotion`, `PendingMotion`, `PendingOperator`, `LastCharMotion`, `NORMAL_KEYS` | n/a (types + constants) |
 | `settings.ts` | `PiVimSettings` shape + `readPiVimSettings` + the `exCommand` resolver | reads settings |
-| `keymap.ts` | key-notation parsing, `KeymapRegistry` | stateful registry, no editor state |
+| `keymap.ts` | canonical key-notation parsing, `KeymapRegistry` | stateful registry, no editor state |
 | `motions.ts` | char-find / word / paragraph motion targets, grapheme splitting | yes |
 | `text-objects.ts` | word / delimited / matching-pair range resolution | yes |
 | `word-boundary-cache.ts` | line-keyed cache of word-motion boundaries | stateful cache, no editor state |
@@ -210,6 +210,8 @@ When a pending sequence is broken (an unmapped key arrives),
 `replayKeymapKeys` retypes the pending keys into the editor:
 the first key is forced through the builtin dispatch (stops from re-opening the same sequence)
 the rest go back through `handleInput`, so a tail that starts a fresh keymap still reaches it.
+`getPendingKeymap` reads registry's `pending` for the
+`keymap.pending()` API, and the session routes it to the most recently built editor.
 
 `handleVisualMode` returns a boolean rather than owning the whole key
 space: motions and counts deliberately fall through to `handleNormalMode`,

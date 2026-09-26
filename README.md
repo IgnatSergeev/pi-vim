@@ -548,12 +548,13 @@ The published object is:
 
 ```ts
 type PiVimApi = {
-  version: 1;
+  version: 2;
   leader: string;
   keymap: {
     set(lhs: string, rhs: string, description?: string): boolean;
     del(lhs: string): boolean;
     list(): ResolvedKeymapEntry[];
+    pending(): PendingKeymap | null;
   };
 };
 ```
@@ -581,11 +582,28 @@ One or more ex lines, each `:{command}<CR>` or nvim's `<cmd>{command}<CR>`, e.g.
     lhs: "<leader>g",          // as the extension wrote it
     rhs: ":lazygit<CR>",       // as the extension wrote it
     description: "Open lazygit",
-    keys: ["<Space>", "g"],    // one entry per key press, <leader> resolved
+    keys: ["<Space>", "g"],    // one entry per key press, <leader> resolved, canonical spelling
     commands: ["lazygit"],     // ex lines the keymap runs, colons stripped
   },
 ]
 ```
+
+### pending sequence
+
+`pending()` reports the sequence pi-vim is waiting on and the keys that can follow it. It returns `null` when nothing is pending.
+
+```ts
+// after <Space> with <Space>g and <Space>fa registered
+{
+  keys: ["<Space>"],                  // typed so far
+  next: [
+    { key: "g", description: "Open lazygit", group: false, count: 1 },
+    { key: "f", description: "", group: true, count: 1 }, // more keys must follow
+  ],
+}
+```
+
+`count` is the number of keymaps reachable through the key.
 
 ### when keymaps fire
 

@@ -19,6 +19,7 @@ export type KeyToken = {
   /** Bytes representation and/or kitty keyboard protocol id */
   bytes?: string;
   keyId?: KeyId;
+  /** Key canonical notation */
   notation: string;
 };
 
@@ -45,6 +46,29 @@ export type ParsedKeymapEntry = {
 export type ResolvedKeymapEntry = RawKeymapEntry & {
   keys: string[];
   commands: string[];
+};
+
+/** One key that can follow a pending keymap sequence */
+export type PendingKeymapHint = {
+  /** Key in canonical notation */
+  key: string;
+  /** Keymap description; empty for a group */
+  description: string;
+  /** True when more keys must follow before a keymap runs */
+  group: boolean;
+  /** Number of keymaps reachable through this key (1 for a keymap) */
+  count: number;
+};
+
+/**
+ * Keymap sequence pi-vim is waiting on, and what can follow it.
+ * Public api of `keymap.pending()`
+ */
+export type PendingKeymap = {
+  /** Keys typed so far, in canonical notation */
+  keys: string[];
+  /** Keys that continue the sequence, in registration order */
+  next: PendingKeymapHint[];
 };
 
 export const DEFAULT_LEADER_NOTATION = "<Space>";
@@ -118,7 +142,94 @@ function parseModifierKeySequence(seq: string): KeyId | null {
   return `${modifiers.join("+")}+${baseKey}` as KeyId;
 }
 
-/** Parse key notation sequence into tokens */
+/** Canonical names of pi-tui key ids */
+const KEY_ID_NAMES: Record<string, string> = {
+  space: "Space",
+  enter: "CR",
+  escape: "Esc",
+  tab: "Tab",
+  backspace: "BS",
+  delete: "Del",
+  up: "Up",
+  down: "Down",
+  left: "Left",
+  right: "Right",
+  home: "Home",
+  end: "End",
+  pageUp: "PageUp",
+  pageDown: "PageDown",
+};
+
+for (let n = 1; n <= 12; n++) {
+  KEY_ID_NAMES[`f${n}`] = `F${n}`;
+}
+
+/** Canonical names of raw key bytes */
+const BYTE_NAMES: Record<string, string> = {
+  " ": "<Space>",
+  "<": "<lt>",
+  "\x00": "<Nul>",
+  "\t": "<Tab>",
+  "\n": "<NL>",
+  "\r": "<CR>",
+  "\x1b": "<Esc>",
+  "\x7f": "<BS>",
+};
+
+/** Modifier key id order */
+const MODIFIER_ORDER: ReadonlyArray<[string, string]> = [
+  ["alt", "M"],
+  ["ctrl", "C"],
+  ["shift", "S"],
+  ["super", "D"],
+];
+
+/**
+ * Spells a key in canonical notation, whichever way the keymap wrote it:
+ * `<Space>` for `<space>` and a literal space, `<CR>` for `<Enter>`, `<M-x>` for `<A-x>`,
+ * `<C-X>` for `<c-x>`, `X` for `<S-x>`.
+ */
+function canonicalNotation(key: Omit<KeyToken, "notation">): string {
+  if (key.keyId !== undefined) return keyIdNotation(key.keyId);
+
+  const bytes = key.bytes ?? "";
+  const named = BYTE_NAMES[bytes];
+  if (named) return named;
+  const code = bytes.length === 1 ? bytes.charCodeAt(0) : -1;
+  if (code >= 0 && code < 0x20) {
+    return `<C-${String.fromCharCode(code + 0x40)}>`;
+  }
+  return bytes;
+}
+
+function keyIdNotation(keyId: string): string {
+  const parts = keyId.split("+");
+  const base = parts.pop() ?? keyId;
+  let modifiers = MODIFIER_ORDER.filter(([id]) => parts.includes(id));
+
+  const named = KEY_ID_NAMES[base];
+  if (named) {
+    const prefix = modifiers.map(([, short]) => `${short}-`).join("");
+    return `<${prefix}${named}>`;
+  }
+
+  let key = base;
+  if (/^[a-z]$/.test(base)) {
+    const ctrl = parts.includes("ctrl");
+    const shift = parts.includes("shift");
+    if (ctrl || shift) key = base.toUpperCase();
+    // Shift is folded into the letter unless ctrl keeps it distinct.
+    if (shift && !ctrl) {
+      modifiers = modifiers.filter(([id]) => id !== "shift");
+    }
+  }
+
+  if (modifiers.length === 0) return key;
+  const prefix = modifiers.map(([, short]) => `${short}-`).join("");
+  return `<${prefix}${key}>`;
+}
+
+/** Parse key notation sequence into tokens, each spelled in canonical notation */
 export function parseNotationSequence(
   seq: string,
   leader: readonly KeyToken[] | null = null,
@@ -132,7 +243,7 @@ export function parseNotationSequence(
       const grapheme = getLineGraphemes(seq.slice(index))[0];
       if (!grapheme) return { error: `unreadable key at position ${index}` };
       const key = seq.slice(index, index + grapheme.end);
-      tokens.push({ bytes: key, notation: key });
+      tokens.push({ bytes: key, notation: canonicalNotation({ bytes: key }) });
       index += grapheme.end;
       continue;
     }
@@ -152,13 +263,16 @@ export function parseNotationSequence(
 
     const namedToken = NAMED_KEYS[notationKeyNames.toLowerCase()];
     if (namedToken) {
-      tokens.push({ ...namedToken, notation: notation });
+      tokens.push({ ...namedToken, notation: canonicalNotation(namedToken) });
       continue;
     }
 
     const modifiedKeyId = parseModifierKeySequence(notationKeyNames);
     if (!modifiedKeyId) return { error: `unknown key ${notation}` };
-    tokens.push({ keyId: modifiedKeyId, notation: notation });
+    tokens.push({
+      keyId: modifiedKeyId,
+      notation: canonicalNotation({ keyId: modifiedKeyId }),
+    });
   }
 
   if (tokens.length === 0) return { error: "empty key sequence" };
@@ -328,6 +442,49 @@ export class KeymapRegistry {
     }
 
     return pending ? { kind: "pending" } : { kind: "none" };
+  }
+
+  /**
+   * Describes a pending sequence: its keys, and the keys that can follow.
+   * Returns null when no keymap continues `keys`.
+   */
+  pending(keys: readonly string[]): PendingKeymap | null {
+    if (keys.length === 0) return null;
+
+    let pending: string[] | null = null;
+    const next = new Map<string, PendingKeymapHint>();
+
+    for (const entry of this.entries.values()) {
+      if (entry.tokens.length <= keys.length) continue;
+      const matches = keys.every((data, index) => {
+        const token = entry.tokens[index];
+        return token !== undefined && keyTokenMatches(token, data);
+      });
+      if (!matches) continue;
+
+      pending ??= entry.tokens.slice(0, keys.length).map((t) => t.notation);
+
+      const token = entry.tokens[keys.length];
+      if (!token) continue;
+      const key = token.notation;
+      const group = entry.tokens.length > keys.length + 1;
+      const hint = next.get(key);
+      if (hint) {
+        hint.count += 1;
+        hint.group ||= group;
+        if (hint.group) hint.description = "";
+        continue;
+      }
+      next.set(key, {
+        key,
+        description: group ? "" : entry.raw.description,
+        group,
+        count: 1,
+      });
+    }
+
+    if (!pending) return null;
+    return { keys: pending, next: [...next.values()] };
   }
 }
 
