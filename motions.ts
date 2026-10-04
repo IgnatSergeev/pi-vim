@@ -2,7 +2,7 @@
  * Motion calculation utilities for vim-mode
  */
 
-import type { CharMotion } from "./types.js";
+import { type CharMotion, MAX_COUNT } from "./types.js";
 
 // Character types for word boundary detection
 export type WordMotionClass = "word" | "WORD";
@@ -300,6 +300,61 @@ export function findWordMotionTarget(
   // Now at end of prev word (or start of line). Find start.
   const type = getCharType(line[i], semanticClass);
   while (i > 0 && getCharType(line[i - 1], semanticClass) === type) i--;
+
+  return i;
+}
+
+/**
+ * Calculate word motion target over a whole buffer.
+ */
+export function findWordTargetInText(
+  text: string,
+  abs: number,
+  direction: "forward" | "backward",
+  target: "start" | "end",
+  count: number = 1,
+  semanticClass: WordMotionClass = "word",
+): number {
+  const len = text.length;
+  if (len === 0) return 0;
+
+  const steps = Math.max(1, Math.min(MAX_COUNT, count));
+  let i = Math.max(0, Math.min(abs, len));
+  const type = (index: number) => getCharType(text[index], semanticClass);
+
+  for (let step = 0; step < steps; step++) {
+    let next = i;
+
+    if (direction === "forward") {
+      if (next >= len) {
+        next = len;
+      } else if (target === "start") {
+        const startType = type(next);
+        if (startType !== CharType.Space) {
+          while (next < len && type(next) === startType) next++;
+        }
+        while (next < len && type(next) === CharType.Space) next++;
+      } else {
+        if (next < len - 1) next++;
+        while (next < len && type(next) === CharType.Space) next++;
+        if (next >= len) {
+          next = len;
+        } else {
+          const t = type(next);
+          while (next < len - 1 && type(next + 1) === t) next++;
+        }
+      }
+    } else {
+      if (next >= len) next = len - 1;
+      if (next > 0) next--;
+      while (next > 0 && type(next) === CharType.Space) next--;
+      const t = type(next);
+      while (next > 0 && type(next - 1) === t) next--;
+    }
+
+    if (next === i) break;
+    i = next;
+  }
 
   return i;
 }

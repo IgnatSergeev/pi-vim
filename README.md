@@ -351,6 +351,32 @@ Line-wise selections put a trailing newline in the register, so a following `p` 
 
 Visual-mode edits are deliberately **not** dot-repeatable: running one clears the stored repeatable command, so a later `.` does nothing instead of replaying an unrelated change. Keys with no visual-mode meaning here — `r`, `J`, `u`, `<C-r>`, `.`, `:`, `i`, `a`, `A`, `I`, `~`, `>`, `<` — are inert while a selection is live rather than falling through to their normal-mode behaviour.
 
+### history pane
+
+Pi's transcript works as a read-only vim window above the prompt. `<C-k>` in normal or visual mode moves focus up into it; `<C-j>` moves back.
+
+The pane's cursor and selection are drawn with Pi's mouse-selection highlight (private pi api), and the prompt's cursor is hidden while the pane has focus. The prompt keeps its text, cursor and undo state. Switching focus drops pending input and a prompt selection. Coming back to the pane reuses its last cursor while that is still on screen, otherwise it starts on the last non-empty visible line. Leaving the pane leaves the transcript as it is at that moment: a view that follows new output (after `G`, or Pi's jump to the latest output) keeps following, and a still view stays where it is.
+
+| key | action |
+|-----|--------|
+| `h` `j` `k` `l`, arrows, `0` `^` `$`, `+` `-` `<CR>` | Move; `j`/`k` keep the screen column |
+| `w` `b` `e`, `W` `B` `E` | Word motions across lines |
+| `f` `F` `t` `T` `;` `,` | Character finds on the cursor line |
+| `gg` `G`, `{count}G`, `{` `}`, `%` | Buffer, paragraph and matching-pair jumps |
+| `H` `M` `L` | Top, middle and bottom of the visible transcript |
+| `<C-d>` `<C-u>` `<C-f>` `<C-b>` `<C-e>` `<C-y>`, PageUp/PageDown | Scroll, dragging the cursor along |
+| `zt` `zz` `zb` | Scroll the cursor line to the top, middle or bottom |
+| `/` `?` then `<CR>`, `n` `N` | Search forward/backward and repeat |
+| `v` `V` | Character-wise and line-wise selection |
+| `iw` `aw` `iW` `aW`, `i"` `a(` … | Text objects, for `y` and in visual mode |
+| `y{motion}`, `yy` / `Y`, visual `y` / `Y` | Yank into the unnamed register |
+| `:` and normal-mode keymaps | Work as on the prompt; focus stays in the pane |
+| `<Esc>` | Leave visual mode or pending input; in plain normal mode it reaches Pi (interrupts the agent), as on the prompt |
+
+A yank goes through the same register and [clipboard mirror](#register-and-clipboard-policy) as a prompt yank. Counts work as in normal mode. Editing keys (`i`, `a`, `d`, `x`, `p`, …) do nothing in the pane.
+
+The cursor skips lines that only decorate the transcript: the gaps between messages, rules, and padding rows. pi-vim tells them apart by the component that rendered each line (pi private api). `j`/`k` and their counts step over decoration, `{`/`}` treat it as a paragraph break and move on to the text after it, `w`/`b`/`e` and search see it as empty, and `G` and following new output use the last text line. A yank drops decoration, keeping one empty line where it separated two pieces of text. Lines from components pi-vim cannot match to the rendered lines count as text.
+
 ---
 
 ## settings reference
@@ -513,7 +539,9 @@ pi-vim does not bundle any such tool and does not care which one you use — any
 | Text objects | `iw` / `aw`, `iW` / `aW`, quote objects, and paren/bracket/brace objects; delimited counts cancel | Full text-object set |
 | `%` matching | `()`, `[]`, `{}` only; lexical same-delimiter matching with no counts, quote/angle matching, parser/matchit logic, or mixed-delimiter validation | Also supports percentage jumps and broader matching |
 | Count prefix | Operators, motions, navigation, `x`, `r`, `p`, `P`; capped at `MAX_COUNT=9999` | Full support |
-| Named registers / macros / search | Not implemented; the unnamed register is supported | Supported |
+| Named registers / macros | Not implemented; the unnamed register is supported | Supported |
+| Search | Supported only in history pane; no `ingorecase`, regex, `*`/`#` | Supported everywhere with regex, `ignorecase`, `*`, `#` |
+| History buffer | Decoration lines are skipped | Every line holds the cursor |
 | Key mappings | Normal-mode only, takes no count, and runs ex lines only. An unfinished sequence waits indefinitely | `:map` family for every mode, arbitrary right-hand sides, `timeoutlen` replay |
 | Ex commands | EX mini-mode quits (`:q`, `:qa`, `:quit`, `:qall`, `:quitall`, and their `!` forms), dispatches non-conflicting Pi slash commands (`:tree`, `:model opus`), and runs shell commands via `:!cmd`; vim ex semantics are reserved, not implemented | Full ex command-line surface |
 | Multi-line operators | `d/c/y` with `w/e/b`, `W/E/B`, `j/k`, and `G`; not the full Vim motion matrix | Rich cross-line semantics |

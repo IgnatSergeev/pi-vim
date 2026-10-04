@@ -5,8 +5,9 @@
  */
 
 import type { WordMotionClass } from "./motions.js";
+import type { Direction } from "./types.js";
 
-export type WordMotionDirection = "forward" | "backward";
+export type WordMotionDirection = Direction;
 export type WordMotionTarget = "start" | "end";
 
 enum CharType {

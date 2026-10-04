@@ -3,6 +3,9 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import {
+  CURSOR_MARKER,
+  decodeKittyPrintable,
+  isKeyRelease,
   Key,
   matchesKey,
   truncateToWidth,
@@ -31,6 +34,8 @@ import {
   INSERT_CURSOR_SHAPE,
   stripSoftwareCursorWhenHardwareCursorIsUsed,
 } from "./cursor-shape.js";
+import { type HistoryActionResult, HistoryPane } from "./history-pane.js";
+import { HistoryViewport } from "./history-viewport.js";
 import {
   isBackspaceLikeInput,
   isCountStarter,
@@ -39,6 +44,7 @@ import {
   isEscapeLikeInput,
   isPrintableChunk,
   isPrintableInput,
+  toHistoryKey,
 } from "./input-keys.js";
 import {
   KeymapRegistry,
@@ -66,6 +72,7 @@ import {
   findCharMotionTarget,
   findFirstNonWhitespaceColumn,
   findParagraphMotionTarget,
+  findWordTargetInText,
   getLineGraphemes,
   reverseCharMotion,
   type WordMotionClass,
@@ -108,8 +115,10 @@ import {
   ESC_LEFT,
   ESC_RIGHT,
   ESC_UP,
+  MAX_COUNT,
   NEWLINE,
   NORMAL_KEYS,
+  type Position,
 } from "./types.js";
 import {
   clampVisualPosition,
@@ -143,7 +152,6 @@ const MODE_COLOR_KEYS: readonly ModeColorKey[] = [
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 const BRACKETED_PASTE_END_TAIL = BRACKETED_PASTE_END.slice(1);
-const MAX_COUNT = 9999;
 const TEXT_INSERT_REPEAT_KEYS = new Set(["i", "a", "A", "I"]);
 const OPEN_LINE_REPEAT_KEYS = new Set(["o", "O"]);
 const REPEATABLE_COMMAND_START_KEYS = new Set([
@@ -256,6 +264,28 @@ type ModalEditorInternals = {
 
 type CustomEditorConstructorArgs = ConstructorParameters<typeof CustomEditor>;
 
+/** `<C-k>` from the prompt's normal or visual mode */
+function isFocusHistoryKey(data: string): boolean {
+  return data === CTRL_K || matchesKey(data, "ctrl+k");
+}
+
+/** `<C-j>`; legacy terminals send it as a bare line feed */
+function isFocusPromptKey(data: string): boolean {
+  return data === "\n" || matchesKey(data, "ctrl+j");
+}
+
+/**
+ * Drop the prompt's software and hardware cursor while the transcript pane has focus.
+ */
+function hidePromptCursor(lines: string[]): void {
+  stripSoftwareCursorWhenHardwareCursorIsUsed(lines);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line?.includes(CURSOR_MARKER))
+      lines[i] = line.replace(CURSOR_MARKER, "");
+  }
+}
+
 type ModalEditorOptions = {
   labelColorizers?: ModeColorizers | null;
   borderColorizers?: ModeColorizers | null;
@@ -288,6 +318,14 @@ export class ModalEditor extends CustomEditor {
   private pendingGCount: string = "";
   private pendingReplace: boolean = false;
   private visualAnchor: VisualPosition | null = null;
+  /** The transcript pane while it has focus, null on the prompt */
+  private historyPane: {
+    pane: HistoryPane;
+    viewport: HistoryViewport;
+    top: number;
+  } | null = null;
+  /** History pane cursor from the last visit */
+  private lastHistoryCursor: Position | null = null;
   private pendingExCommand: string | null = null;
   private acceptingBracketedPasteInExCommand: boolean = false;
   private pendingEscWhileAcceptingBracketedPasteInExCommand: boolean = false;
@@ -452,12 +490,22 @@ export class ModalEditor extends CustomEditor {
   getMode(): Mode {
     return this.mode;
   }
+  /** Mode of the focused transcript pane, or null while the prompt has focus */
+  getHistoryPaneMode(): Mode | null {
+    return this.historyPane?.pane.getMode() ?? null;
+  }
+  setDefaultFocus(): void {
+    this.focusPrompt();
+  }
   getText(): string {
     return this.getLines().join("\n");
   }
 
   private getActiveMode(): ModeColorKey {
     if (this.pendingExCommand !== null) return "ex";
+    if (this.historyPane) {
+      return this.historyPane.pane.getMode() === "normal" ? "normal" : "visual";
+    }
     if (this.mode === "insert") return "insert";
     if (isVisualMode(this.mode)) return "visual";
     return "normal";
@@ -1360,6 +1408,27 @@ export class ModalEditor extends CustomEditor {
 
   private handleInputCore(data: string): void {
     this.ensureOnChangeHook();
+
+    // With the kitty keyboard protocol or tmux's csi-u extended keys, shifted
+    // letters arrive as CSI-u sequences (`G` as `\x1b[71;2u`).
+    // Insert mode leaves them to the host editor, which decodes them itself.
+    if (this.mode !== "insert" && !isKeyRelease(data)) {
+      data = decodeKittyPrintable(data) ?? data;
+    }
+
+    if (this.historyPane && this.pendingExCommand === null) {
+      this.handleHistoryInput(data);
+      return;
+    }
+
+    if (
+      this.mode !== "insert" &&
+      this.pendingExCommand === null &&
+      isFocusHistoryKey(data)
+    ) {
+      this.focusHistoryPane();
+      return;
+    }
 
     if (this.pendingExCommand !== null) {
       const normalized = this.normalizePendingExCommandInput(data);
@@ -3237,20 +3306,6 @@ export class ModalEditor extends CustomEditor {
     });
   }
 
-  private isWordChar(ch: string): boolean {
-    return /\w/.test(ch);
-  }
-
-  private charType(
-    ch: string | undefined,
-    semanticClass: WordMotionClass = "word",
-  ): "space" | "word" | "other" {
-    if (!ch || /\s/.test(ch)) return "space";
-    if (semanticClass === "WORD") return "word";
-    if (this.isWordChar(ch)) return "word";
-    return "other";
-  }
-
   private resolveWordMotion(
     motion: string,
   ): { motion: "w" | "e" | "b"; semanticClass: WordMotionClass } | null {
@@ -3333,75 +3388,6 @@ export class ModalEditor extends CustomEditor {
     }
 
     return this.getAbsoluteIndex(cursor.line, cursor.col);
-  }
-
-  private findWordTargetInText(
-    text: string,
-    abs: number,
-    direction: "forward" | "backward",
-    target: "start" | "end",
-    count: number = 1,
-    semanticClass: WordMotionClass = "word",
-  ): number {
-    const len = text.length;
-    if (len === 0) return 0;
-
-    const steps = Math.max(1, Math.min(MAX_COUNT, count));
-    let i = Math.max(0, Math.min(abs, len));
-
-    for (let step = 0; step < steps; step++) {
-      let next = i;
-
-      if (direction === "forward") {
-        if (next >= len) {
-          next = len;
-        } else if (target === "start") {
-          const startType = this.charType(text[next], semanticClass);
-          if (startType !== "space") {
-            while (
-              next < len &&
-              this.charType(text[next], semanticClass) === startType
-            )
-              next++;
-          }
-          while (
-            next < len &&
-            this.charType(text[next], semanticClass) === "space"
-          )
-            next++;
-        } else {
-          if (next < len - 1) next++;
-          while (
-            next < len &&
-            this.charType(text[next], semanticClass) === "space"
-          )
-            next++;
-          if (next >= len) {
-            next = len;
-          } else {
-            const t = this.charType(text[next], semanticClass);
-            while (
-              next < len - 1 &&
-              this.charType(text[next + 1], semanticClass) === t
-            )
-              next++;
-          }
-        }
-      } else {
-        if (next >= len) next = len - 1;
-        if (next > 0) next--;
-        while (next > 0 && this.charType(text[next], semanticClass) === "space")
-          next--;
-        const t = this.charType(text[next], semanticClass);
-        while (next > 0 && this.charType(text[next - 1], semanticClass) === t)
-          next--;
-      }
-
-      if (next === i) break;
-      i = next;
-    }
-
-    return i;
   }
 
   private tryFindWordTargetInLine(
@@ -3550,7 +3536,7 @@ export class ModalEditor extends CustomEditor {
 
       const text = this.getText();
       const currentAbs = this.getAbsoluteIndexFromCursor();
-      const targetAbs = this.findWordTargetInText(
+      const targetAbs = findWordTargetInText(
         text,
         currentAbs,
         direction,
@@ -3838,7 +3824,7 @@ export class ModalEditor extends CustomEditor {
 
       const text = this.getText();
       const currentAbs = this.getAbsoluteIndexFromCursor();
-      const targetAbs = this.findWordTargetInText(
+      const targetAbs = findWordTargetInText(
         text,
         currentAbs,
         wordMotion.motion === "b" ? "backward" : "forward",
@@ -4068,7 +4054,7 @@ export class ModalEditor extends CustomEditor {
 
       const text = this.getText();
       const currentAbs = this.getAbsoluteIndexFromCursor();
-      const targetAbs = this.findWordTargetInText(
+      const targetAbs = findWordTargetInText(
         text,
         currentAbs,
         wordMotion.motion === "b" ? "backward" : "forward",
@@ -4367,6 +4353,122 @@ export class ModalEditor extends CustomEditor {
     this.deleteRangeByAbsolute(lineStartAbs + start, lineStartAbs + end);
   }
 
+  /**
+   * Move focus from the prompt into the transcript pane.
+   * Pending input and a prompt selection are dropped.
+   * The prompt keeps its text, cursor and undo state.
+   */
+  private focusHistoryPane(): void {
+    const tui = (this as unknown as ModalEditorInternals).tui;
+    const viewport = HistoryViewport.attach(tui);
+    if (!viewport) {
+      this.notifyFn(
+        "The history pane needs Pi's fullscreen TUI (tuiMode: fullscreen)",
+      );
+      return;
+    }
+    this.clearPendingState();
+    this.cancelRepeatableCommand();
+    if (isVisualMode(this.mode)) this.exitVisualMode();
+
+    const view = viewport.view();
+    const last = this.lastHistoryCursor;
+    const onScreen =
+      last !== null &&
+      last.line >= view.top &&
+      last.line < view.top + view.height;
+    const pane = new HistoryPane(
+      viewport.lines(),
+      view,
+      onScreen ? last : undefined,
+    );
+    this.historyPane = { pane, viewport, top: view.top };
+    this.syncHistoryViewport({});
+    (this as unknown as ModalEditorInternals).tui?.requestRender?.();
+  }
+
+  /** Move focus from the transcript pane into the prompt */
+  private focusPrompt(): void {
+    const focused = this.historyPane;
+    if (!focused) return;
+    const paneMode = focused.pane.getMode();
+    this.historyPane = null;
+    this.lastHistoryCursor = focused.pane.getCursor();
+    focused.viewport.detach(
+      focused.pane.isFollowingEnd() || focused.viewport.isFollowingEnd(),
+    );
+    this.notifyHistoryPaneModeChange(paneMode, "normal");
+    (this as unknown as ModalEditorInternals).tui?.requestRender?.();
+  }
+
+  /** Report history pane mode transition through the regular mode-change hook */
+  private notifyHistoryPaneModeChange(prev: Mode, next: Mode) {
+    if (prev === next) return;
+    try {
+      this.modeChangeFn(next, prev);
+    } catch {
+    }
+  }
+
+  private handleHistoryInput(data: string): void {
+    const focused = this.historyPane;
+    if (!focused) return;
+    const { pane, viewport } = focused;
+
+    if (isFocusPromptKey(data)) {
+      this.focusPrompt();
+      return;
+    }
+    if (pane.isIdle() || this.pendingKeymapKeys.length > 0) {
+      if (this.handleKeymapKey(data)) return;
+      if (data === ":") {
+        this.startPendingExCommand();
+        return;
+      }
+    }
+
+    const key = toHistoryKey(data);
+    if (key === null) return;
+    const prevMode = pane.getMode();
+    const result = pane.handleKey(key, viewport.lines(), viewport.view());
+    this.notifyHistoryPaneModeChange(prevMode, pane.getMode());
+    if (result.yank !== undefined) this.writeToRegister(result.yank, "yank");
+    if (result.notify) this.notifyFn(result.notify);
+    if (result.forward) super.handleInput(data);
+    this.syncHistoryViewport(result);
+  }
+
+  /** Sync viewport with the history pane state */
+  private syncHistoryViewport(result: HistoryActionResult): void {
+    const focused = this.historyPane;
+    if (!focused) return;
+    const { pane, viewport } = focused;
+    if (pane.isFollowingEnd()) viewport.followEnd();
+    else viewport.reveal(pane.getCursor().line, result.scrollTop);
+    focused.top = viewport.view().top;
+    viewport.paint(pane.getMode(), pane.getAnchor(), pane.getCursor());
+  }
+
+  /** Sync history pane with the viewport state, and rerender viewport on updated pane state */
+  private syncHistoryPane(): void {
+    const focused = this.historyPane;
+    if (!focused) return;
+    const { pane, viewport } = focused;
+    const view = viewport.view();
+    if (viewport.isFollowingEnd() && !pane.isFollowingEnd()) pane.followEnd();
+    if (pane.isFollowingEnd()) {
+      pane.update(viewport.lines(), view);
+      focused.top = view.top;
+    } else {
+      pane.setView(view);
+    }
+    if (view.top !== focused.top) {
+      focused.top = view.top;
+      pane.followView();
+    }
+    viewport.paint(pane.getMode(), pane.getAnchor(), pane.getCursor(), false);
+  }
+
   private getDesiredCursorShapeSequence(): CursorShapeSequence {
     return "insert" === this.mode && this.pendingExCommand === null
       ? INSERT_CURSOR_SHAPE
@@ -4400,7 +4502,9 @@ export class ModalEditor extends CustomEditor {
   }
 
   render(width: number): string[] {
+    this.syncHistoryPane();
     const lines = super.render(width);
+    if (this.historyPane) hidePromptCursor(lines);
     this.syncCursorShapeForRender(lines);
 
     const rawLabel = fitModeLabel(this.getModeLabel(), width);
@@ -4451,6 +4555,7 @@ export class ModalEditor extends CustomEditor {
   private getModeLabel(): string {
     if ("insert" === this.mode) return " INSERT ";
     if (this.pendingExCommand !== null) return ` EX ${this.pendingExCommand}_ `;
+    if (this.historyPane) return this.historyPane.pane.getLabel();
 
     const prefixCount = this.prefixCount;
     const operatorCount = this.operatorCount;
@@ -4619,6 +4724,7 @@ export default function (pi: ExtensionAPI) {
       emitModeChange,
     );
     ctx.ui.setEditorComponent((tui, theme, kb) => {
+      activeEditor?.setDefaultFocus();
       cursorShapeCleanup = enableCursorShapeSupport(tui);
       const editor = new ModalEditor(tui, theme, kb, {
         labelColorizers,

@@ -242,9 +242,11 @@ export async function runNvimParityCase(
   }
 
   const combinedOutput = `${stdout}\n${stderr}`;
+  // Messages such as a search echo can share the line with the result
   const resultLine = combinedOutput
     .split(/\r?\n/)
-    .find((line) => line.startsWith(NVIM_RESULT_PREFIX));
+    .find((line) => line.includes(NVIM_RESULT_PREFIX))
+    ?.replace(/^.*?PI_VIM_NVIM_RESULT:/, NVIM_RESULT_PREFIX);
 
   if (!resultLine) {
     throw new Error(

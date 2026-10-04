@@ -1,4 +1,4 @@
-import { matchesKey } from "@earendil-works/pi-tui";
+import { type KeyId, matchesKey } from "@earendil-works/pi-tui";
 import { getLineGraphemes } from "./motions.js";
 
 // Keyboard-input classification predicates. Pure functions over the raw
@@ -47,4 +47,45 @@ export function isDigit(data: string): boolean {
 
 export function isCountStarter(data: string): boolean {
   return data.length === 1 && data >= "1" && data <= "9";
+}
+
+const HISTORY_CONTROL_KEYS = [
+  "b",
+  "c",
+  "d",
+  "e",
+  "f",
+  "n",
+  "p",
+  "u",
+  "y",
+] as const;
+const HISTORY_ARROW_KEYS: ReadonlyArray<[KeyId, string]> = [
+  ["up", "k"],
+  ["down", "j"],
+  ["left", "h"],
+  ["right", "l"],
+];
+
+/**
+ * Translate raw terminal input into history mode's key vocabulary: printable
+ * text as is, control keys as their C0 byte, arrows as hjkl. Returns null for
+ * input history mode ignores, such as a bracketed paste.
+ */
+export function toHistoryKey(data: string): string | null {
+  if (data.includes("\x1b[200~")) return null;
+  if (isEscapeLikeInput(data)) return "\x1b";
+  if (isEnterLikeInput(data)) return "\r";
+  if (isBackspaceLikeInput(data)) return "\x7f";
+  for (const [name, key] of HISTORY_ARROW_KEYS) {
+    if (matchesKey(data, name)) return key;
+  }
+  if (matchesKey(data, "pageUp")) return "\x02";
+  if (matchesKey(data, "pageDown")) return "\x06";
+  for (const letter of HISTORY_CONTROL_KEYS) {
+    if (matchesKey(data, `ctrl+${letter}`)) {
+      return String.fromCharCode(letter.charCodeAt(0) - 96);
+    }
+  }
+  return isPrintableChunk(data) ? data : null;
 }

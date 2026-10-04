@@ -8,10 +8,10 @@
  */
 
 import { getLineGraphemes } from "./motions.js";
-import type { Mode } from "./types.js";
+import type { Mode, Position } from "./types.js";
 
 export type VisualMode = "visual" | "visual-line";
-export type VisualPosition = { line: number; col: number };
+export type VisualPosition = Position;
 
 export function isVisualMode(mode: Mode): mode is VisualMode {
   return mode === "visual" || mode === "visual-line";

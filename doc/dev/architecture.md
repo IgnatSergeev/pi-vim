@@ -25,6 +25,7 @@ flowchart TD
         wbcache["word-boundary-cache.ts — line-local word-boundary cache"]
         inputkeys["input-keys.ts — keyboard-input classification predicates"]
         visual["visual.ts — visual-selection geometry"]
+        historypane["history-pane.ts — read-only transcript pane state machine"]
     end
 
     subgraph render["render / presentation"]
@@ -37,6 +38,7 @@ flowchart TD
         clipmirror["clipboard-mirror.ts — mirror writes to system clipboard"]
         clippolicy["clipboard-policy.ts — resolve all / yank / never policy"]
         modechange["mode-change-command.ts — run shell hook on transitions"]
+        historyviewport["history-viewport.ts — pi-tui fullscreen transcript bridge"]
     end
 
     subgraph shared["shared vocabulary"]
@@ -50,6 +52,8 @@ flowchart TD
     index --> wbcache
     index --> inputkeys
     index --> visual
+    index --> historypane
+    index --> historyviewport
     index --> cursorshape
     index --> modelabel
     index --> modecolors
@@ -70,6 +74,11 @@ flowchart TD
     modechange --> settings
     modechange --> types
     keymap --> motions
+    historypane --> motions
+    historypane --> textobjects
+    historypane --> types
+    historyviewport --> historypane
+    historyviewport --> motions
 ```
 
 Every arrow is a direct `import`. The graph is acyclic and one-directional:
@@ -96,6 +105,8 @@ changing behavior.
 | `mode-colors.ts` | resolve/build per-mode colorizers from settings + theme | resolves config |
 | `mode-change-command.ts` | debounced shell command on mode transitions | side effect (spawn) |
 | `clipboard-mirror.ts` | mirror register writes to the system clipboard via child process, with a failure circuit breaker | side effect (spawn) |
+| `history-pane.ts` | transcript-pane cursor, normal/visual mode, counts, search and yank ranges over plain transcript lines | yes |
+| `history-viewport.ts` | read the fullscreen transcript and paint the selection through pi-tui internals | side effect (host internals) |
 | `clipboard-policy.ts` | resolve the `all` / `yank` / `never` mirror policy | yes |
 
 ## modal state machine
@@ -107,8 +118,10 @@ changing behavior.
 visual modes onto `"normal"`, so EX entry/exit and visual entry/exit reuse
 the normal-mode colors. Mode-change shell hooks *do* fire on visual
 transitions (they receive `"visual"` / `"visual-line"` and run the
-`modeChange.normal` command) but not on EX entry/exit. Within normal mode,
-several short-lived *pending* sub-states capture the next key(s) of a
+`modeChange.normal` command) but not on EX entry/exit.
+The transcript pane has its own normal/visual/visual-line state;
+the label, colors and mode-change hooks report it with the same names.
+Within normal mode, several short-lived *pending* sub-states capture the next key(s) of a
 multi-key command.
 
 ```mermaid

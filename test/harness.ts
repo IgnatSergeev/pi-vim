@@ -288,3 +288,44 @@ export function createMultiLineEditor(text: string): {
     notifications,
   };
 }
+
+/** Minimal stand-in for pi-tui's fullscreen TuiAltScreen */
+export function createFakeAltScreen(
+  lines: string[],
+  { top = 0, height = 10, following = true } = {},
+) {
+  const scrollView = {
+    scrollTop: top,
+    viewportHeight: height,
+    isFollowingEnd: following,
+    scrollCalls: [] as Array<{ top: number; disableFollow?: boolean }>,
+    scrollTo(next: number, options?: { disableFollow?: boolean }) {
+      this.scrollCalls.push({
+        top: next,
+        disableFollow: options?.disableFollow,
+      });
+      this.scrollTop = next;
+      this.isFollowingEnd = false;
+    },
+    scrollToEnd() {
+      this.scrollTop = Math.max(0, lines.length - this.viewportHeight);
+      this.isFollowingEnd = true;
+    },
+  };
+  return {
+    mode: "fullscreen",
+    renders: 0,
+    terminal: { rows: 40, cols: 120 },
+    currentLayout: {
+      root: {
+        children: [{ scrollView, scrollContentLines: lines, children: [] }],
+      },
+      primaryScrollView: scrollView,
+    },
+    selectionAnchor: undefined as unknown,
+    selectionFocus: undefined as unknown,
+    requestRender() {
+      this.renders++;
+    },
+  };
+}

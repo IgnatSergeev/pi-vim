@@ -67,22 +67,21 @@ type ModalEditorTestInternals = {
     target: WordMotionTarget,
     semanticClass?: WordMotionClass,
   ) => number | null;
-  findWordTargetInText(
-    text: string,
-    abs: number,
-    direction: "forward" | "backward",
-    target: "start" | "end",
+  tryMoveWordLineLocal(
+    direction: WordMotionDirection,
+    target: WordMotionTarget,
+    semanticClass?: WordMotionClass,
+  ): boolean;
+  tryWordMotionLineLocalRange(
+    motion: "w" | "e" | "b",
     count?: number,
     semanticClass?: WordMotionClass,
-  ): number;
+  ): { col: number; targetCol: number; inclusive: boolean } | null;
   wordBoundaryCache: ModalEditorWordBoundaryCacheInternals;
   state?: unknown;
   pushUndoSnapshot?: (() => void) | undefined;
 };
 
-type FindWordTargetInTextArgs = Parameters<
-  ModalEditorTestInternals["findWordTargetInText"]
->;
 type TryFindTargetArgs = Parameters<
   ModalEditorWordBoundaryCacheInternals["tryFindTarget"]
 >;
@@ -674,6 +673,29 @@ function makeGeneratedLineFixtures(count: number): string[] {
   }
 
   return fixtures;
+}
+
+/**
+ * Record each answer of the line-local word-motion fast path: `true` when it
+ * resolved the motion, `false` when it declined and the canonical absolute
+ * scanner (`findWordTargetInText`) ran instead.
+ */
+function spyLineLocalWordPath(editor: ModalEditor): boolean[] {
+  const raw = getRawEditor(editor);
+  const answers: boolean[] = [];
+  const move = raw.tryMoveWordLineLocal.bind(raw);
+  raw.tryMoveWordLineLocal = (...args) => {
+    const moved = move(...args);
+    answers.push(moved);
+    return moved;
+  };
+  const range = raw.tryWordMotionLineLocalRange.bind(raw);
+  raw.tryWordMotionLineLocalRange = (...args) => {
+    const resolved = range(...args);
+    answers.push(resolved !== null);
+    return resolved;
+  };
+  return answers;
 }
 
 function runScenario(
@@ -6704,50 +6726,29 @@ describe("word motion path selection", () => {
   it("line-local w avoids canonical absolute scanner", () => {
     const { editor } = createEditorWithSpy("alpha beta");
 
-    const raw = getRawEditor(editor);
-    const original = raw.findWordTargetInText.bind(raw);
-    let calls = 0;
-
-    raw.findWordTargetInText = (...args: FindWordTargetInTextArgs) => {
-      calls++;
-      return original(...args);
-    };
+    const answers = spyLineLocalWordPath(editor);
 
     sendKeys(editor, ["w"]);
-    assert.equal(calls, 0);
+    assert.ok(answers.length > 0 && answers.every(Boolean));
   });
 
   it("line-local e avoids canonical absolute scanner", () => {
     const { editor } = createEditorWithSpy("alpha beta");
 
-    const raw = getRawEditor(editor);
-    const original = raw.findWordTargetInText.bind(raw);
-    let calls = 0;
-
-    raw.findWordTargetInText = (...args: FindWordTargetInTextArgs) => {
-      calls++;
-      return original(...args);
-    };
+    const answers = spyLineLocalWordPath(editor);
 
     sendKeys(editor, ["e"]);
-    assert.equal(calls, 0);
+    assert.ok(answers.length > 0 && answers.every(Boolean));
   });
 
   it("line-local b avoids canonical absolute scanner", () => {
     const { editor } = createEditorWithSpy("alpha beta");
     sendKeys(editor, ["w"]);
 
-    const raw = getRawEditor(editor);
-    const original = raw.findWordTargetInText.bind(raw);
-    let calls = 0;
-
-    raw.findWordTargetInText = (...args: FindWordTargetInTextArgs) => {
-      calls++;
-      return original(...args);
-    };
+    const answers = spyLineLocalWordPath(editor);
 
     sendKeys(editor, ["b"]);
-    assert.equal(calls, 0);
+    assert.ok(answers.length > 0 && answers.every(Boolean));
   });
 
   it("line-local W/E/B thread WORD semantic class through cache lookup", () => {
@@ -6785,70 +6786,41 @@ describe("word motion path selection", () => {
   it("cache uncertainty falls back to canonical absolute scanner", () => {
     const { editor } = createEditorWithSpy("alpha beta");
 
-    const raw = getRawEditor(editor);
-    const original = raw.findWordTargetInText.bind(raw);
-    let calls = 0;
-
-    raw.findWordTargetInText = (...args: FindWordTargetInTextArgs) => {
-      calls++;
-      return original(...args);
-    };
-
-    raw.wordBoundaryCache.tryFindTarget = () => null;
+    const answers = spyLineLocalWordPath(editor);
+    getRawEditor(editor).wordBoundaryCache.tryFindTarget = () => null;
 
     sendKeys(editor, ["w"]);
-    assert.ok(calls > 0);
+    assert.ok(answers.includes(false));
   });
 
   it("w at EOL falls back to canonical absolute scanner", () => {
     const { editor } = createMultiLineEditor("foo\nbar");
     sendKeys(editor, ["$"]);
 
-    const raw = getRawEditor(editor);
-    const original = raw.findWordTargetInText.bind(raw);
-    let calls = 0;
-
-    raw.findWordTargetInText = (...args: FindWordTargetInTextArgs) => {
-      calls++;
-      return original(...args);
-    };
+    const answers = spyLineLocalWordPath(editor);
 
     sendKeys(editor, ["w"]);
-    assert.ok(calls > 0);
+    assert.ok(answers.includes(false));
   });
 
   it("e at EOL falls back to canonical absolute scanner", () => {
     const { editor } = createMultiLineEditor("foo\nbar");
     sendKeys(editor, ["$"]);
 
-    const raw = getRawEditor(editor);
-    const original = raw.findWordTargetInText.bind(raw);
-    let calls = 0;
-
-    raw.findWordTargetInText = (...args: FindWordTargetInTextArgs) => {
-      calls++;
-      return original(...args);
-    };
+    const answers = spyLineLocalWordPath(editor);
 
     sendKeys(editor, ["e"]);
-    assert.ok(calls > 0);
+    assert.ok(answers.includes(false));
   });
 
   it("b from BOL falls back to canonical absolute scanner", () => {
     const { editor } = createMultiLineEditor("foo\nbar");
     sendKeys(editor, ["j", "0"]);
 
-    const raw = getRawEditor(editor);
-    const original = raw.findWordTargetInText.bind(raw);
-    let calls = 0;
-
-    raw.findWordTargetInText = (...args: FindWordTargetInTextArgs) => {
-      calls++;
-      return original(...args);
-    };
+    const answers = spyLineLocalWordPath(editor);
 
     sendKeys(editor, ["b"]);
-    assert.ok(calls > 0);
+    assert.ok(answers.includes(false));
   });
 
   it("W/E at EOL and B at BOL fall back to canonical absolute scanner", () => {
@@ -6865,17 +6837,10 @@ describe("word motion path selection", () => {
 
     for (const scenario of scenarios) {
       const { editor } = createMultiLineEditor(scenario.initial);
-      const raw = getRawEditor(editor);
-      const original = raw.findWordTargetInText.bind(raw);
-      let calls = 0;
-
-      raw.findWordTargetInText = (...args: FindWordTargetInTextArgs) => {
-        calls++;
-        return original(...args);
-      };
+      const answers = spyLineLocalWordPath(editor);
 
       sendKeys(editor, [...scenario.setup, scenario.motion]);
-      assert.ok(calls > 0, `${scenario.name} should fall back`);
+      assert.ok(answers.includes(false), `${scenario.name} should fall back`);
     }
   });
 });
@@ -6910,17 +6875,13 @@ describe("operator word-motion path selection", () => {
 
     for (const scenario of scenarios) {
       const { editor } = createEditorWithSpy(scenario.initial);
-      const raw = getRawEditor(editor);
-      const original = raw.findWordTargetInText.bind(raw);
-      let calls = 0;
-
-      raw.findWordTargetInText = (...args: FindWordTargetInTextArgs) => {
-        calls++;
-        return original(...args);
-      };
+      const answers = spyLineLocalWordPath(editor);
 
       sendKeys(editor, scenario.keys);
-      assert.equal(calls, 0, `${scenario.name} should stay line-local`);
+      assert.ok(
+        answers.length > 0 && answers.every(Boolean),
+        `${scenario.name} should stay line-local`,
+      );
     }
   });
 
@@ -6998,17 +6959,10 @@ describe("operator word-motion path selection", () => {
       if (scenario.cursor) {
         setInternalCursor(editor, scenario.cursor.col, scenario.cursor.line);
       }
-      const raw = getRawEditor(editor);
-      const original = raw.findWordTargetInText.bind(raw);
-      let calls = 0;
-
-      raw.findWordTargetInText = (...args: FindWordTargetInTextArgs) => {
-        calls++;
-        return original(...args);
-      };
+      const answers = spyLineLocalWordPath(editor);
 
       sendKeys(editor, scenario.keys);
-      assert.ok(calls > 0, `${scenario.name} should fall back`);
+      assert.ok(answers.includes(false), `${scenario.name} should fall back`);
     }
   });
 });
@@ -8292,14 +8246,14 @@ describe("undo / redo — u / ctrl+r", () => {
     assert.equal(editor.getRegister(), "keep");
   });
 
-  it("ctrl+k still cancels pending delete and clears stale redo history", () => {
+  it("a Pi editing key still cancels pending delete and clears stale redo history", () => {
     const { editor } = createEditorWithSpy("abcd");
 
     sendKeys(editor, ["x", "u"]);
     assert.equal(editor.getText(), "abcd");
     assert.equal(editor.getRegister(), "a");
 
-    sendKeys(editor, ["d", "\x0b"]);
+    sendKeys(editor, ["d", "\x1bd"]);
 
     assert.equal(editor.getText(), "");
     assert.deepEqual(editor.getCursor(), { line: 0, col: 0 });
@@ -10382,6 +10336,7 @@ describe("normal-mode keymaps", () => {
 
       assert.equal(session.editor.getPendingKeymap(), null);
     });
+  });
 });
 
 describe("pi-vim extension keymap API", () => {
